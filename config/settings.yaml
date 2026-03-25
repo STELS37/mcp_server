@@ -1,0 +1,124 @@
+# MCP Server Configuration
+# Override with environment variables (MCP__ prefix, double underscore for nested)
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  log_level: "info"
+  cors_origins:
+    - "https://chat.openai.com"
+    - "https://chatgpt.com"
+    - "https://cdn.oaistatic.com"
+    - "https://cdn.auth0.com"
+
+# MCP Protocol settings
+mcp:
+  server_name: "VPS SSH Gateway"
+  server_version: "1.0.0"
+  protocol_version: "2024-11-05"
+  capabilities:
+    tools: true
+    resources: false
+    prompts: false
+    logging: true
+
+# SSH Target Configuration
+ssh:
+  host: "${SSH_HOST}"
+  port: 22
+  user: "${SSH_USER}"
+  private_key_path: "/app/secrets/ssh_key"
+  private_key_passphrase: "${SSH_KEY_PASSPHRASE}"
+  connection_timeout: 30
+  command_timeout: 30
+  max_output_size: 65536  # 64 KB
+  max_sessions: 10
+  keepalive_interval: 30
+
+# OAuth/OIDC Configuration
+oauth:
+  enabled: true
+  issuer_url: "${OAUTH_ISSUER_URL}"
+  authorization_endpoint: "${OAUTH_AUTH_ENDPOINT}"
+  token_endpoint: "${OAUTH_TOKEN_ENDPOINT}"
+  userinfo_endpoint: "${OAUTH_USERINFO_ENDPOINT}"
+  jwks_uri: "${OAUTH_JWKS_URI}"
+  client_id: "${OAUTH_CLIENT_ID}"
+  client_secret: "${OAUTH_CLIENT_SECRET}"
+  scopes:
+    - "openid"
+    - "profile"
+    - "email"
+    - "offline_access"
+  audience: "${OAUTH_AUDIENCE}"
+  redirect_uris:
+    - "${MCP_BASE_URL}/auth/callback"
+  refresh_token_enabled: true
+  token_expiry_leeway: 60
+
+# Security Settings
+security:
+  rate_limit_requests: 100
+  rate_limit_period: 60
+  dangerous_commands:
+    - "reboot"
+    - "shutdown"
+    - "init"
+    - "halt"
+    - "poweroff"
+    - "rm"
+    - "rmdir"
+    - "dd"
+    - "mkfs"
+    - "fdisk"
+    - "parted"
+    - "ufw"
+    - "iptables"
+    - "ip6tables"
+    - "firewall-cmd"
+    - "userdel"
+    - "useradd"
+    - "usermod"
+    - "passwd"
+    - "chage"
+    - "groupdel"
+    - "groupadd"
+    - "visudo"
+    - "systemctl"
+    - "journalctl"
+    - "docker"
+    - "kubectl"
+    - "kubectl"
+    - "kubectl"
+  dangerous_patterns:
+    - "rm -rf"
+    - "rm -r"
+    - "rm -R"
+    - "rm /*"
+    - "> /dev/"
+    - "dd if="
+    - ":(){ :|:& };:"
+  require_confirm_params:
+    - "confirm"
+    - "force"
+    - "yes"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "json"
+  path: "/var/log/mcp-server"
+  max_size: 10485760  # 10 MB
+  backup_count: 5
+  log_tool_calls: true
+  log_auth_events: true
+  log_ssh_sessions: true
+
+# Health Check Settings
+health:
+  enabled: true
+  path: "/health"
+  readiness_path: "/ready"
+  ssh_check: true
+  oauth_check: true

@@ -1,0 +1,33 @@
+[Unit]
+Description=MCP SSH Gateway Server
+Documentation=https://github.com/your-repo/mcp-ssh-gateway
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=notify
+User=mcp
+Group=mcp
+WorkingDirectory=/opt/mcp-server
+EnvironmentFile=/opt/mcp-server/.env
+ExecStart=/opt/mcp-server/venv/bin/python -m mcp_server.main
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/mcp-server /opt/mcp-server/secrets
+ReadOnlyPaths=/etc/ssl/certs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server
+
+[Install]
+WantedBy=multi-user.target

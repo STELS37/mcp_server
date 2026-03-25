@@ -1,0 +1,28 @@
+name: Check for Updates
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check for base image updates
+      uses: lucacome/docker-image-update-checker@v1
+      with:
+        base-image: python:3.11-slim-bookworm
+        image: ghcr.io/${{ github.repository }}:latest
+        platforms: linux/amd64
+    
+    - name: Trigger rebuild if update available
+      if: steps.check.outputs.needs-updating == 'true'
+      run: |
+        echo "Base image has updates. Triggering rebuild..."
+        curl -X POST \
+          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-deploy.yml/dispatches \
+          -d '{"ref":"main"}'

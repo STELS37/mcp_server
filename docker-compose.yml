@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-server:latest
+    container_name: mcp-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_BASE_URL=${MCP_BASE_URL}
+      - MCP_SSH__HOST=${MCP_SSH__HOST}
+      - MCP_SSH__PORT=${MCP_SSH__PORT:-22}
+      - MCP_SSH__USER=${MCP_SSH__USER}
+      - MCP_OAUTH__ISSUER_URL=${MCP_OAUTH__ISSUER_URL}
+      - MCP_OAUTH__CLIENT_ID=${MCP_OAUTH__CLIENT_ID}
+      - MCP_OAUTH__CLIENT_SECRET=${MCP_OAUTH__CLIENT_SECRET}
+      - MCP_OAUTH__AUTHORIZATION_ENDPOINT=${MCP_OAUTH__AUTHORIZATION_ENDPOINT}
+      - MCP_OAUTH__TOKEN_ENDPOINT=${MCP_OAUTH__TOKEN_ENDPOINT}
+      - MCP_OAUTH__USERINFO_ENDPOINT=${MCP_OAUTH__USERINFO_ENDPOINT}
+      - MCP_OAUTH__JWKS_URI=${MCP_OAUTH__JWKS_URI}
+      - MCP_REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - mcp-logs:/var/log/mcp-server
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mcp-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 64mb
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mcp-network
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+    command: mcp-server
+    networks:
+      - mcp-network
+
+volumes:
+  mcp-logs:
+  redis-data:
+
+networks:
+  mcp-network:
+    driver: bridge
