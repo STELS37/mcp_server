@@ -197,15 +197,37 @@ class OAuthHandler:
             # Get signing key
             signing_key = await self._get_signing_key(kid)
             
-            # Verify and decode token
+            # Verify and decode token signature/issuer first. We validate audience manually
+            # to support providers (e.g. Keycloak) where access token `aud` can differ while
+            # authorized party is in `azp`.
             payload = jwt.decode(
                 token,
                 signing_key,
                 algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
-                audience=self.settings.client_id,
                 issuer=self.settings.issuer_url,
+                options={"verify_aud": False},
             )
-            
+
+            # Manual audience / authorized party validation
+            expected_client = self.settings.client_id
+            expected_audience = self.settings.audience
+            token_aud = payload.get("aud")
+            token_azp = payload.get("azp")
+
+            if isinstance(token_aud, str):
+                aud_values = [token_aud]
+            elif isinstance(token_aud, list):
+                aud_values = token_aud
+            else:
+                aud_values = []
+
+            if expected_audience:
+                if expected_audience not in aud_values and token_azp != expected_audience:
+                    raise ValueError("Invalid token audience")
+            elif expected_client:
+                if expected_client not in aud_values and token_azp != expected_client:
+                    raise ValueError("Invalid token audience")
+
             return payload
             
         except JWTError as e:
@@ -249,6 +271,7 @@ class OAuthHandler:
             "token_endpoint": self.settings.token_endpoint,
             "userinfo_endpoint": self.settings.userinfo_endpoint,
             "jwks_uri": self.settings.jwks_uri,
+            "registration_endpoint": f"{get_settings().base_url}/auth/register",
             "scopes_supported": self.settings.scopes,
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],

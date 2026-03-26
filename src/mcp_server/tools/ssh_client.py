@@ -116,7 +116,7 @@ class SSHClient:
                     self.settings.host,
                     port=self.settings.port,
                     username=self.settings.user,
-                    private_key=private_key,
+                    client_keys=[str(key_path)],
                     known_hosts=None,  # In production, use known_hosts
                     connect_timeout=self.settings.connection_timeout,
                     keepalive_interval=self.settings.keepalive_interval,

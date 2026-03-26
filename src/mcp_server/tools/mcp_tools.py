@@ -21,6 +21,7 @@ class ToolDefinition:
     input_schema: Dict[str, Any]
     handler: Callable
     dangerous: bool = False
+    annotations: Optional[Dict[str, Any]] = None
 
 
 class MCPTools:
@@ -423,21 +424,130 @@ class MCPTools:
             handler=self._get_server_facts,
             dangerous=False
         ))
+
+        # 16. execute_command_plan
+        self._register_tool(ToolDefinition(
+            name="execute_command_plan",
+            description="Execute a multi-step command plan on the VPS in a single tool call. Useful for batching inspection or change operations to reduce repeated approvals. If any step is dangerous, set confirm=true once at the top level.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered list of shell steps to execute",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string",
+                                    "description": "Optional human-readable label for the step"
+                                },
+                                "command": {
+                                    "type": "string",
+                                    "description": "Shell command to execute"
+                                },
+                                "timeout": {
+                                    "type": "integer",
+                                    "description": "Command timeout in seconds (default: 30)",
+                                    "default": 30
+                                },
+                                "working_dir": {
+                                    "type": "string",
+                                    "description": "Working directory for command execution"
+                                },
+                                "env": {
+                                    "type": "object",
+                                    "description": "Environment variables as key-value pairs"
+                                },
+                                "use_sudo": {
+                                    "type": "boolean",
+                                    "description": "Run command with sudo (default: false)",
+                                    "default": False
+                                },
+                                "confirm": {
+                                    "type": "boolean",
+                                    "description": "Optional per-step override for dangerous commands"
+                                }
+                            },
+                            "required": ["command"]
+                        }
+                    },
+                    "stop_on_error": {
+                        "type": "boolean",
+                        "description": "Stop plan execution after the first failed step (default: true)",
+                        "default": True
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Set to true to allow dangerous steps in the plan with one approval",
+                        "default": False
+                    }
+                },
+                "required": ["steps"]
+            },
+            handler=self._execute_command_plan,
+            dangerous=True,
+            annotations={
+                "title": "Execute Command Plan",
+                "readOnlyHint": False,
+                "destructiveHint": True,
+                "idempotentHint": False,
+                "openWorldHint": False
+            }
+        ))
     
+    def _default_annotations_for_tool(self, name: str) -> Dict[str, Any]:
+        """Infer safe default tool annotations for MCP clients."""
+        read_only_tools = {
+            "ping_host",
+            "read_file",
+            "download_file",
+            "list_dir",
+            "systemd_status",
+            "journal_tail",
+            "docker_ps",
+            "docker_logs",
+            "get_public_ip",
+            "get_server_facts",
+        }
+        open_world_read_only_tools = {"ping_host", "get_public_ip"}
+
+        if name in read_only_tools:
+            return {
+                "title": name.replace("_", " ").title(),
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": name in open_world_read_only_tools,
+            }
+
+        return {
+            "title": name.replace("_", " ").title(),
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+
     def _register_tool(self, tool_def: ToolDefinition):
         """Register a tool."""
+        if tool_def.annotations is None:
+            tool_def.annotations = self._default_annotations_for_tool(tool_def.name)
         self._tools[tool_def.name] = tool_def
     
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Get all tool definitions in MCP format."""
-        return [
-            {
+        definitions: List[Dict[str, Any]] = []
+        for tool in self._tools.values():
+            item = {
                 "name": tool.name,
                 "description": tool.description,
-                "inputSchema": tool.input_schema
+                "inputSchema": tool.input_schema,
             }
-            for tool in self._tools.values()
-        ]
+            if tool.annotations:
+                item["annotations"] = tool.annotations
+            definitions.append(item)
+        return definitions
     
     async def execute_tool(
         self,
@@ -525,6 +635,76 @@ class MCPTools:
             "isError": not result.success
         }
     
+    async def _execute_command_plan(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a sequence of commands with one top-level confirmation."""
+        steps = args.get("steps", [])
+        stop_on_error = args.get("stop_on_error", True)
+        global_confirm = args.get("confirm", False)
+        user = args.get("_user", "unknown")
+
+        if not isinstance(steps, list) or not steps:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": "steps must be a non-empty array"
+                }],
+                "isError": True
+            }
+
+        sections: List[str] = []
+        failures = 0
+        executed = 0
+
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                failures += 1
+                sections.append(f"## Step {idx}\nInvalid step payload: expected object")
+                if stop_on_error:
+                    break
+                continue
+
+            command = step.get("command")
+            if not command:
+                failures += 1
+                sections.append(f"## Step {idx}\nMissing command")
+                if stop_on_error:
+                    break
+                continue
+
+            label = step.get("label") or f"Step {idx}"
+            result = await self.executor.execute_safe(
+                command=command,
+                user=user,
+                timeout=step.get("timeout", 30),
+                working_dir=step.get("working_dir"),
+                env=step.get("env"),
+                use_sudo=step.get("use_sudo", False),
+                confirm=step.get("confirm", global_confirm),
+            )
+            executed += 1
+
+            chunk = [f"## {idx}. {label}", f"COMMAND: {command}"]
+            if result.stdout:
+                chunk.append(f"STDOUT:\n{result.stdout}")
+            if result.stderr:
+                chunk.append(f"STDERR:\n{result.stderr}")
+            chunk.append(f"EXIT CODE: {result.exit_code}")
+            sections.append("\n\n".join(chunk))
+
+            if not result.success:
+                failures += 1
+                if stop_on_error:
+                    break
+
+        summary = f"Executed {executed} of {len(steps)} step(s). Failures: {failures}. stop_on_error={stop_on_error}."
+        return {
+            "content": [{
+                "type": "text",
+                "text": summary + "\n\n" + "\n\n".join(sections)
+            }],
+            "isError": failures > 0
+        }
+
     async def _read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read a file."""
         path = args.get("path")
@@ -912,9 +1092,7 @@ class MCPTools:
         # Format output
         output = "# Server Facts\n\n"
         for key, value in facts.items():
-            output += f"## {key.upper()}\n```
-{value}
-```\n\n"
+            output += "## " + key.upper() + "\n```\n" + str(value) + "\n```\n\n"
         
         return {
             "content": [{

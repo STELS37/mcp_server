@@ -206,6 +206,85 @@ async def oauth_metadata():
     return JSONResponse(_oauth_handler.get_oidc_metadata())
 
 
+@auth_router.post("/register")
+async def dynamic_client_registration(request: Request):
+    """RFC7591 Dynamic Client Registration endpoint for ChatGPT connectors."""
+    if not _oauth_handler:
+        raise HTTPException(status_code=501, detail="OAuth not configured")
+
+    settings = get_settings()
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    now = int(__import__('time').time())
+    scope_value = payload.get("scope") or " ".join(settings.oauth.scopes)
+    redirect_uris = payload.get("redirect_uris") if isinstance(payload.get("redirect_uris"), list) else []
+
+    return JSONResponse(
+        {
+            "client_id": settings.oauth.client_id,
+            "client_secret": settings.oauth.client_secret,
+            "client_id_issued_at": now,
+            "client_secret_expires_at": 0,
+            "client_name": payload.get("client_name", "chatgpt-mcp"),
+            "redirect_uris": redirect_uris,
+            "grant_types": payload.get("grant_types", ["authorization_code", "refresh_token"]),
+            "response_types": payload.get("response_types", ["code"]),
+            "token_endpoint_auth_method": payload.get("token_endpoint_auth_method", "client_secret_post"),
+            "scope": scope_value,
+            "application_type": payload.get("application_type", "web"),
+        },
+        status_code=201,
+    )
+
+
+
+def _protected_resource_metadata(resource_path: str = "/sse") -> dict:
+    """Return OAuth 2.0 Protected Resource metadata for MCP/SSE clients."""
+    settings = get_settings()
+    base = settings.base_url.rstrip("/")
+    auth_server = f"{base}/auth/.well-known/oauth-authorization-server"
+    scopes = settings.oauth.scopes if settings.oauth.enabled else []
+    return {
+        "resource": f"{base}{resource_path}",
+        "authorization_servers": [settings.oauth.issuer_url] if settings.oauth.enabled and settings.oauth.issuer_url else [],
+        "scopes_supported": scopes,
+        "bearer_methods_supported": ["header"],
+        "resource_documentation": base,
+        "oauth_authorization_server": auth_server,
+    }
+
+
+@router.get("/.well-known/oauth-protected-resource")
+async def oauth_protected_resource_root():
+    """OAuth protected resource metadata for the MCP SSE resource."""
+    settings = get_settings()
+    if not settings.oauth.enabled:
+        raise HTTPException(status_code=404, detail="OAuth not enabled")
+    return JSONResponse(_protected_resource_metadata("/sse"))
+
+
+@router.get("/sse/.well-known/oauth-protected-resource")
+async def oauth_protected_resource_sse_nested():
+    """OAuth protected resource metadata under the SSE path."""
+    settings = get_settings()
+    if not settings.oauth.enabled:
+        raise HTTPException(status_code=404, detail="OAuth not enabled")
+    return JSONResponse(_protected_resource_metadata("/sse"))
+
+
+@router.get("/.well-known/oauth-protected-resource/sse")
+async def oauth_protected_resource_sse_alt():
+    """Alternate OAuth protected resource metadata path queried by some clients."""
+    settings = get_settings()
+    if not settings.oauth.enabled:
+        raise HTTPException(status_code=404, detail="OAuth not enabled")
+    return JSONResponse(_protected_resource_metadata("/sse"))
+
 # MCP SSE endpoint - main entry point for ChatGPT
 @router.get("/sse")
 async def sse_endpoint(
@@ -262,6 +341,7 @@ async def openid_configuration():
         "token_endpoint": settings.oauth.token_endpoint,
         "userinfo_endpoint": settings.oauth.userinfo_endpoint,
         "jwks_uri": settings.oauth.jwks_uri,
+        "registration_endpoint": f"{settings.base_url}/auth/register",
         "scopes_supported": settings.oauth.scopes,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],

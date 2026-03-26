@@ -44,3 +44,8 @@ htmlcov/
 
 # Project specific
 certs/
+.runtime/
+.env_minimal
+cloudflared
+cloudflared-linux-amd64.deb
+*.bak.*
