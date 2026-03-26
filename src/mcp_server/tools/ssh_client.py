@@ -98,19 +98,19 @@ class SSHClient:
                 except Exception:
                     self._connected = False
                     self._connection = None
-            
+
             try:
                 # Load private key
                 key_path = Path(self.settings.private_key_path)
                 if not key_path.exists():
                     raise FileNotFoundError(f"SSH key not found: {key_path}")
-                
+
                 private_key = await asyncio.to_thread(
                     self._load_private_key,
                     key_path,
                     self.settings.private_key_passphrase
                 )
-                
+
                 # Connect
                 self._connection = await asyncssh.connect(
                     self.settings.host,
@@ -121,12 +121,12 @@ class SSHClient:
                     connect_timeout=self.settings.connection_timeout,
                     keepalive_interval=self.settings.keepalive_interval,
                 )
-                
+
                 self._connected = True
                 self._last_activity = time.time()
                 logger.info(f"SSH connected to {self.settings.host}")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"SSH connection failed: {e}")
                 self._connected = False
@@ -188,6 +188,27 @@ class SSHClient:
         
         return is_dangerous, warnings
     
+
+    async def _is_alive(self) -> bool:
+        """Check whether SSH connection object seems alive."""
+        try:
+            return self.client is not None and (not self.client.is_closing())
+        except Exception:
+            return False
+
+    async def _ensure_connected(self):
+        """Ensure connection exists and reconnect if needed."""
+        if await self._is_alive():
+            return
+        async with self._lock:
+            if await self._is_alive():
+                return
+            try:
+                await self.disconnect()
+            except Exception:
+                pass
+            await self.connect()
+
     async def execute(
         self,
         command: str,
