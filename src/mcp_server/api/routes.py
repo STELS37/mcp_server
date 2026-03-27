@@ -206,6 +206,13 @@ async def oauth_metadata():
     return JSONResponse(_oauth_handler.get_oidc_metadata())
 
 
+@router.get("/.well-known/oauth-authorization-server/realms/mcp")
+async def oauth_metadata_realm_alias():
+    """RFC8414 alias for issuer with path component `/realms/mcp`."""
+    if not _oauth_handler:
+        raise HTTPException(status_code=501, detail="OAuth not configured")
+    return JSONResponse(_oauth_handler.get_oidc_metadata())
+
 @auth_router.post("/register")
 async def dynamic_client_registration(request: Request):
     """RFC7591 Dynamic Client Registration endpoint for ChatGPT connectors."""
@@ -285,6 +292,23 @@ async def oauth_protected_resource_sse_alt():
         raise HTTPException(status_code=404, detail="OAuth not enabled")
     return JSONResponse(_protected_resource_metadata("/sse"))
 
+
+@router.get("/.well-known/oauth-protected-resource/mcp")
+async def oauth_protected_resource_mcp_well_known():
+    """OAuth protected resource metadata for MCP JSON-RPC endpoint."""
+    settings = get_settings()
+    if not settings.oauth.enabled:
+        raise HTTPException(status_code=404, detail="OAuth not enabled")
+    return JSONResponse(_protected_resource_metadata("/mcp"))
+
+
+@router.get("/mcp/.well-known/oauth-protected-resource")
+async def oauth_protected_resource_mcp_nested():
+    """OAuth protected resource metadata under MCP path."""
+    settings = get_settings()
+    if not settings.oauth.enabled:
+        raise HTTPException(status_code=404, detail="OAuth not enabled")
+    return JSONResponse(_protected_resource_metadata("/mcp"))
 # MCP SSE endpoint - main entry point for ChatGPT
 @router.get("/sse")
 async def sse_endpoint(

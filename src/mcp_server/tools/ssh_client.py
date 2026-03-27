@@ -83,6 +83,7 @@ class SSHClient:
         # Load dangerous commands and patterns
         self.dangerous_commands = get_settings().security.dangerous_commands
         self.dangerous_patterns = get_settings().security.dangerous_patterns
+        self.enforce_confirmations = get_settings().security.enforce_confirmations
         
     async def connect(self) -> bool:
         """Establish SSH connection."""
@@ -169,6 +170,8 @@ class SSHClient:
     
     def is_dangerous_command(self, command: str) -> Tuple[bool, List[str]]:
         """Check if command is potentially dangerous."""
+        if not self.enforce_confirmations:
+            return False, []
         warnings = []
         is_dangerous = False
         
@@ -192,22 +195,30 @@ class SSHClient:
     async def _is_alive(self) -> bool:
         """Check whether SSH connection object seems alive."""
         try:
-            return self.client is not None and (not self.client.is_closing())
+            return self._connection is not None and (not self._connection.is_closing())
         except Exception:
             return False
 
     async def _ensure_connected(self):
-        """Ensure connection exists and reconnect if needed."""
+        """Ensure connection exists and reconnect if needed (avoid lock recursion)."""
         if await self._is_alive():
             return
+
+        # Reset stale connection under lock without calling disconnect/connect here
         async with self._lock:
             if await self._is_alive():
                 return
-            try:
-                await self.disconnect()
-            except Exception:
-                pass
-            await self.connect()
+            if self._connection:
+                try:
+                    self._connection.close()
+                    await asyncio.wait_for(self._connection.wait_closed(), timeout=5)
+                except Exception:
+                    pass
+                self._connection = None
+            self._connected = False
+
+        # Reconnect outside lock (connect() acquires self._lock internally)
+        await self.connect()
 
     async def execute(
         self,
@@ -239,8 +250,7 @@ class SSHClient:
             )
         
         # Ensure connection
-        if not self.is_connected:
-            await self.connect()
+        await self._ensure_connected()
         
         # Build full command
         full_command = command

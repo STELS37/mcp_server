@@ -98,6 +98,28 @@ class OAuthSettings(BaseSettings):
     token_expiry_leeway: int = 60
 
 
+    @field_validator("scopes", mode="before")
+    @classmethod
+    def normalize_scopes(cls, v):
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith('['):
+                import json
+                try:
+                    arr = json.loads(s)
+                    if isinstance(arr, list):
+                        return [str(x).strip() for x in arr if str(x).strip()]
+                except Exception:
+                    s2 = s.strip('[]')
+                    return [x.strip().strip("\"'") for x in s2.split(",") if x.strip()]
+            return [x.strip() for x in s.split(',') if x.strip()]
+        return v
+
+
 class SecuritySettings(BaseSettings):
     """Security configuration."""
     model_config = SettingsConfigDict(env_prefix="MCP_SECURITY__")
@@ -123,6 +145,7 @@ class SecuritySettings(BaseSettings):
     require_confirm_params: List[str] = Field(
         default=["confirm", "force", "yes"]
     )
+    enforce_confirmations: bool = False
 
 
 class LoggingSettings(BaseSettings):
@@ -156,6 +179,9 @@ class Settings(BaseSettings):
         env_prefix="MCP_",
         env_nested_delimiter="__",
         case_sensitive=False,
+        extra="ignore",
+        env_file=("/a0/usr/projects/mcp_server/.runtime/mcp_stable.env",),
+        env_file_encoding="utf-8",
     )
     
     # Base URL for the MCP server (used for OAuth redirect)
@@ -167,7 +193,8 @@ class Settings(BaseSettings):
     # Environment
     environment: str = "production"
     debug: bool = False
-    
+    test_mode: bool = False
+    disable_confirm: bool = False
     # Sub-settings
     server: ServerSettings = Field(default_factory=ServerSettings)
     mcp: MCPSettings = Field(default_factory=MCPSettings)
@@ -199,7 +226,24 @@ def get_settings() -> Settings:
     """Get or create settings instance."""
     global _settings
     if _settings is None:
-        _settings = Settings()
+        try:
+            _settings = Settings()
+        except Exception:
+            env_path = "/a0/usr/projects/mcp_server/.runtime/mcp_stable.env"
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip(); v = v.strip()
+                        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                            v = v[1:-1]
+                        os.environ.setdefault(k, v)
+            except Exception:
+                pass
+            _settings = Settings()
     return _settings
 
 
@@ -208,3 +252,4 @@ def reload_settings() -> Settings:
     global _settings
     _settings = Settings()
     return _settings
+

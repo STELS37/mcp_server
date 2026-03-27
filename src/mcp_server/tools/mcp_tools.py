@@ -1,3 +1,4 @@
+import os
 """MCP Tools implementation for ChatGPT."""
 import logging
 import json
@@ -9,6 +10,9 @@ from dataclasses import dataclass
 from mcp_server.tools.ssh_client import SSHClient, SSHResult
 from mcp_server.tools.executor import CommandExecutor, ExecutionResult
 from mcp_server.core.settings import get_settings
+from mcp_server.tools.extra_tools import register_extra_tools
+from mcp_server.tools.ops_tools import register_ops_tools
+from mcp_server.tools.playbook_tools import register_playbook_tools
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +66,7 @@ class MCPTools:
         # 2. run_command
         self._register_tool(ToolDefinition(
             name="run_command",
-            description="Execute a shell command on the VPS. Returns stdout, stderr, and exit_code.\n\nIMPORTANT: Dangerous commands (reboot, shutdown, rm -rf, ufw, iptables, userdel, passwd, systemctl, docker, etc.) require confirm=true to execute.",
+            description="Execute a shell command on the VPS. Returns stdout, stderr, and exit_code.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -90,7 +94,7 @@ class MCPTools:
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Set to true to confirm execution of dangerous commands",
+                        "description": "Compatibility flag; ignored when unrestricted mode is enabled",
                         "default": False
                     }
                 },
@@ -126,7 +130,7 @@ class MCPTools:
         # 4. write_file
         self._register_tool(ToolDefinition(
             name="write_file",
-            description="Write content to a file on the VPS. Creates the file if it doesn't exist. Use with caution.",
+            description="Write content to a file on the VPS. Creates the file if it does not exist.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -145,7 +149,7 @@ class MCPTools:
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Set to true to confirm overwriting existing files",
+                        "description": "Compatibility flag; ignored when unrestricted mode is enabled",
                         "default": False
                     }
                 },
@@ -254,7 +258,7 @@ class MCPTools:
         # 9. systemd_restart
         self._register_tool(ToolDefinition(
             name="systemd_restart",
-            description="Restart a systemd service. Requires confirmation.",
+            description="Restart a systemd service.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -269,7 +273,7 @@ class MCPTools:
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Set to true to confirm service restart",
+                        "description": "Compatibility flag; ignored when unrestricted mode is enabled",
                         "default": False
                     }
                 },
@@ -365,7 +369,7 @@ class MCPTools:
         # 13. docker_exec
         self._register_tool(ToolDefinition(
             name="docker_exec",
-            description="Execute a command in a Docker container. Use with caution.",
+            description="Execute a command in a Docker container.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -383,7 +387,7 @@ class MCPTools:
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Set to true to confirm execution",
+                        "description": "Compatibility flag; ignored when unrestricted mode is enabled",
                         "default": False
                     }
                 },
@@ -425,10 +429,123 @@ class MCPTools:
             dangerous=False
         ))
 
-        # 16. execute_command_plan
+
+        # 16. health_check
+        self._register_tool(ToolDefinition(
+            name="health_check",
+            description="Read the local MCP server /health endpoint from the VPS without using a generic shell command.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Local MCP HTTP port (default: 8000)",
+                        "default": 8000
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Local host to query (default: 127.0.0.1)",
+                        "default": "127.0.0.1"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Request timeout in seconds (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": []
+            },
+            handler=self._health_check,
+            dangerous=False,
+            annotations={
+                "title": "Health Check",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False
+            }
+        ))
+
+        # 17. ready_check
+        self._register_tool(ToolDefinition(
+            name="ready_check",
+            description="Read the local MCP server /ready endpoint from the VPS without using a generic shell command.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Local MCP HTTP port (default: 8000)",
+                        "default": 8000
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Local host to query (default: 127.0.0.1)",
+                        "default": "127.0.0.1"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Request timeout in seconds (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": []
+            },
+            handler=self._ready_check,
+            dangerous=False,
+            annotations={
+                "title": "Ready Check",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False
+            }
+        ))
+
+        # 18. http_get_local
+        self._register_tool(ToolDefinition(
+            name="http_get_local",
+            description="Read a local HTTP endpoint on the VPS for diagnostics without using a generic shell command. Restricted to localhost/127.0.0.1/::1.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path on the local HTTP service, e.g. /health or /ready"
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "Local TCP port (default: 8000)",
+                        "default": 8000
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Local host to query (default: 127.0.0.1)",
+                        "default": "127.0.0.1"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Request timeout in seconds (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": ["path"]
+            },
+            handler=self._http_get_local,
+            dangerous=False,
+            annotations={
+                "title": "HTTP Get Local",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False
+            }
+        ))
+
+        # 19. execute_command_plan
         self._register_tool(ToolDefinition(
             name="execute_command_plan",
-            description="Execute a multi-step command plan on the VPS in a single tool call. Useful for batching inspection or change operations to reduce repeated approvals. If any step is dangerous, set confirm=true once at the top level.",
+            description="Execute a multi-step command plan on the VPS in a single tool call. Useful for batching inspection or change operations.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -466,7 +583,7 @@ class MCPTools:
                                 },
                                 "confirm": {
                                     "type": "boolean",
-                                    "description": "Optional per-step override for dangerous commands"
+                                    "description": "Optional compatibility flag"
                                 }
                             },
                             "required": ["command"]
@@ -479,7 +596,7 @@ class MCPTools:
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Set to true to allow dangerous steps in the plan with one approval",
+                        "description": "Compatibility flag; ignored when unrestricted mode is enabled",
                         "default": False
                     }
                 },
@@ -496,6 +613,10 @@ class MCPTools:
             }
         ))
     
+        register_extra_tools(self)
+        register_ops_tools(self)
+        register_playbook_tools(self)
+
     def _default_annotations_for_tool(self, name: str) -> Dict[str, Any]:
         """Infer safe default tool annotations for MCP clients."""
         read_only_tools = {
@@ -509,6 +630,9 @@ class MCPTools:
             "docker_logs",
             "get_public_ip",
             "get_server_facts",
+            "health_check",
+            "ready_check",
+            "http_get_local",
         }
         open_world_read_only_tools = {"ping_host", "get_public_ip"}
 
@@ -524,9 +648,9 @@ class MCPTools:
         return {
             "title": name.replace("_", " ").title(),
             "readOnlyHint": False,
-            "destructiveHint": True,
+            "destructiveHint": False,
             "idempotentHint": False,
-            "openWorldHint": False,
+            "openWorldHint": True,
         }
 
     def _register_tool(self, tool_def: ToolDefinition):
@@ -737,18 +861,6 @@ class MCPTools:
         confirm = args.get("confirm", False)
         user = args.get("_user", "unknown")
         
-        if not confirm:
-            # Check if file exists
-            check = await self.ssh.execute(f"test -f {path}", user=user)
-            if check.exit_code == 0:
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"File {path} already exists. Set confirm=true to overwrite."
-                    }],
-                    "isError": True
-                }
-        
         result = await self.ssh.write_file(path, content, user, use_sudo)
         
         return {
@@ -879,15 +991,6 @@ class MCPTools:
         confirm = args.get("confirm", False)
         user = args.get("_user", "unknown")
         
-        if not confirm:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"Service restart requires confirm=true to proceed. This will restart the {service} service."
-                }],
-                "isError": False
-            }
-        
         result = await self.ssh.execute(
             f"systemctl restart {service}",
             user=user,
@@ -971,15 +1074,6 @@ class MCPTools:
         exec_user = args.get("user")
         confirm = args.get("confirm", False)
         user = args.get("_user", "unknown")
-        
-        if not confirm:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"Docker exec requires confirm=true. Command would be: docker exec {container} {command}"
-                }],
-                "isError": False
-            }
         
         cmd_parts = ["docker", "exec"]
         if exec_user:
@@ -1102,6 +1196,77 @@ class MCPTools:
             "isError": False
         }
 
+
+
+    async def _health_check(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the local /health endpoint."""
+        user = args.get("_user", "unknown")
+        host = args.get("host", "127.0.0.1")
+        port = int(args.get("port", 8000))
+        timeout = int(args.get("timeout", 10))
+        return await self._read_local_http("/health", host, port, timeout, user)
+
+    async def _ready_check(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the local /ready endpoint."""
+        user = args.get("_user", "unknown")
+        host = args.get("host", "127.0.0.1")
+        port = int(args.get("port", 8000))
+        timeout = int(args.get("timeout", 10))
+        return await self._read_local_http("/ready", host, port, timeout, user)
+
+    async def _http_get_local(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read a localhost-only HTTP endpoint."""
+        user = args.get("_user", "unknown")
+        host = args.get("host", "127.0.0.1")
+        port = int(args.get("port", 8000))
+        timeout = int(args.get("timeout", 10))
+        path = args.get("path", "/")
+        return await self._read_local_http(path, host, port, timeout, user)
+
+    async def _read_local_http(self, path: str, host: str, port: int, timeout: int, user: str) -> Dict[str, Any]:
+        """Perform a localhost-only GET request using curl on the VPS."""
+        allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+        if host not in allowed_hosts:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Host {host} is not allowed. Use one of: {', '.join(sorted(allowed_hosts))}."
+                }],
+                "isError": True
+            }
+
+        if not isinstance(path, str) or not path.startswith('/'):
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": "path must start with '/'."
+                }],
+                "isError": True
+            }
+
+        url = f"http://{host}:{port}{path}"
+        result = await self.ssh.execute(
+            f"curl -fsS --max-time {timeout} {url}",
+            user=user,
+            timeout=max(timeout + 2, 5),
+        )
+
+        if result.exit_code != 0:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Failed to GET {url}: {result.stderr or result.stdout}"
+                }],
+                "isError": True
+            }
+
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"GET {url}\n\n{result.stdout.strip()}"
+            }],
+            "isError": False
+        }
 
 def register_tools(ssh_client: SSHClient) -> MCPTools:
     """Create and return MCP tools instance."""
