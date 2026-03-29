@@ -1,5 +1,10 @@
 name: Auto Deploy on Push
 
+permissions:
+  contents: read
+  packages: write
+
+
 on:
   push:
     branches: [ main, master ]

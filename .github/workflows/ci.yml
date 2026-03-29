@@ -1,5 +1,10 @@
 name: CI/CD Pipeline
 
+permissions:
+  contents: read
+  packages: read
+
+
 on:
   push:
     branches: [ main, master ]
@@ -52,7 +57,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     steps:
     - name: Deploy to server
-      if: ${{ secrets.SERVER_HOST }} != ''
+      if: ${{ secrets.SERVER_HOST != '' }}
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SERVER_HOST }}

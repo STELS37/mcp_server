@@ -1,5 +1,11 @@
 name: Check for Updates
 
+permissions:
+  contents: read
+  actions: write
+  packages: read
+
+
 on:
   schedule:
     - cron: '0 */6 * * *'  # Every 6 hours
@@ -11,10 +17,11 @@ jobs:
     
     steps:
     - name: Check for base image updates
+      id: check
       uses: lucacome/docker-image-update-checker@v1
       with:
         base-image: python:3.11-slim-bookworm
-        image: ghcr.io/${{ github.repository }}:latest
+        image: ghcr.io/${{ github.repository_owner }}/mcp_server:latest
         platforms: linux/amd64
     
     - name: Trigger rebuild if update available
