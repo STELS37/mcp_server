@@ -18,6 +18,7 @@ jobs:
     steps:
     - name: Check for base image updates
       id: check
+      continue-on-error: true
       uses: lucacome/docker-image-update-checker@v1
       with:
         base-image: python:3.11-slim-bookworm
@@ -25,7 +26,7 @@ jobs:
         platforms: linux/amd64
     
     - name: Trigger rebuild if update available
-      if: steps.check.outputs.needs-updating == 'true'
+      if: ${{ steps.check.conclusion == 'success' && steps.check.outputs.needs-updating == 'true' }}
       run: |
         echo "Base image has updates. Triggering rebuild..."
         curl -X POST \
