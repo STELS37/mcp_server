@@ -1,0 +1,18 @@
+[Unit]
+Description=MCP Privileged Broker Daemon
+After=network.target mcp-task-orchestrator.service
+Wants=mcp-task-orchestrator.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/a0/usr/projects/mcp_server
+Environment=PYTHONPATH=/a0/usr/projects/mcp_server/src
+ExecStart=/a0/usr/projects/mcp_server/venv/bin/python -m mcp_server.core.broker_daemon
+Restart=always
+RestartSec=3
+RuntimeDirectory=mcp-brokerd
+
+[Install]
+WantedBy=multi-user.target
+

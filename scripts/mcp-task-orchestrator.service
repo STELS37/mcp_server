@@ -1,0 +1,19 @@
+[Unit]
+Description=MCP Task Orchestrator Worker
+After=network.target mcp-server.service
+Wants=mcp-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/a0/usr/projects/mcp_server
+Environment=PYTHONPATH=/a0/usr/projects/mcp_server/src
+ExecStart=/a0/usr/projects/mcp_server/venv/bin/python -m mcp_server.core.task_orchestrator
+Restart=always
+RestartSec=3
+StandardOutput=append:/a0/usr/projects/mcp_server/.runtime/task_queue/orchestrator.out.log
+StandardError=append:/a0/usr/projects/mcp_server/.runtime/task_queue/orchestrator.err.log
+
+[Install]
+WantedBy=multi-user.target
+

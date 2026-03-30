@@ -3,7 +3,9 @@ import os
 import logging
 import json
 import base64
+import hashlib
 import time
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass
 
@@ -13,6 +15,19 @@ from mcp_server.core.settings import get_settings
 from mcp_server.tools.extra_tools import register_extra_tools
 from mcp_server.tools.ops_tools import register_ops_tools
 from mcp_server.tools.playbook_tools import register_playbook_tools
+from mcp_server.tools.session_tools import register_session_tools
+from mcp_server.tools.state_tools import register_state_tools
+from mcp_server.tools.capability_tools import register_capability_tools
+from mcp_server.tools.safe_edit_tools import register_safe_edit_tools
+from mcp_server.tools.repo_tools import register_repo_tools
+from mcp_server.tools.workflow_tools import register_workflow_tools
+from mcp_server.tools.anti_loop_tools import register_anti_loop_tools
+from mcp_server.tools.bootstrap_tools import register_bootstrap_tools
+from mcp_server.tools.smart_tools import register_smart_tools
+from mcp_server.tools.router_tools import register_router_tools
+from mcp_server.tools.cache_tools import register_cache_tools
+from mcp_server.tools.orchestrator_tools import register_orchestrator_tools
+from mcp_server.tools.action_router_tools import register_action_router_tools
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +51,14 @@ class MCPTools:
         self.executor = CommandExecutor(ssh_client)
         self.settings = get_settings()
         self._tools: Dict[str, ToolDefinition] = {}
+        self.extra_tools: Dict[str, Dict[str, Any]] = {}
+        self._read_cache: Dict[str, Dict[str, Any]] = {}
+        self._read_cache_hits = 0
+        self._read_cache_misses = 0
         self._register_all_tools()
+        # Register action router for unified tool access
+        register_action_router_tools(self)
+    
     
     def _register_all_tools(self):
         """Register all available tools."""
@@ -616,6 +638,34 @@ class MCPTools:
         register_extra_tools(self)
         register_ops_tools(self)
         register_playbook_tools(self)
+        register_session_tools(self)
+        register_state_tools(self)
+        register_capability_tools(self)
+        register_safe_edit_tools(self)
+        register_repo_tools(self)
+        register_workflow_tools(self)
+        register_anti_loop_tools(self)
+        register_bootstrap_tools(self)
+        register_smart_tools(self)
+        register_router_tools(self)
+        register_cache_tools(self)
+        register_orchestrator_tools(self)
+
+        # Back-compat: modules that register via toolset.extra_tools
+        if getattr(self, "extra_tools", None):
+            for _name, _meta in list(self.extra_tools.items()):
+                _handler = _meta.get("handler")
+                if not callable(_handler):
+                    logger.error(f"Skipping extra tool {_name}: handler is not callable")
+                    continue
+                self._register_tool(ToolDefinition(
+                    name=_name,
+                    description=_meta.get("description", ""),
+                    input_schema=_meta.get("input_schema", {"type": "object", "properties": {}, "required": []}),
+                    handler=_handler,
+                    dangerous=bool(_meta.get("dangerous", False)),
+                    annotations=_meta.get("annotations"),
+                ))
 
     def _default_annotations_for_tool(self, name: str) -> Dict[str, Any]:
         """Infer safe default tool annotations for MCP clients."""
@@ -658,6 +708,188 @@ class MCPTools:
         if tool_def.annotations is None:
             tool_def.annotations = self._default_annotations_for_tool(tool_def.name)
         self._tools[tool_def.name] = tool_def
+
+    def _cache_ttl_for_tool(self, name: str) -> int:
+        ttl_map = {
+            "health_check": 5,
+            "ready_check": 5,
+            "get_capabilities_manifest": 10,
+            "get_server_build_info": 10,
+            "get_tool_registry_version": 10,
+            "systemd_status": 5,
+            "list_dir": 5,
+            "list_tree": 5,
+            "read_file": 5,
+            "read_json_file": 5,
+            "get_operational_brief": 5,
+            "inspect_current_workspace": 5,
+        }
+        return ttl_map.get(name, 5)
+
+    def _is_cacheable_tool(self, tool: ToolDefinition, arguments: Dict[str, Any]) -> bool:
+        if arguments.get("bypass_cache"):
+            return False
+        annotations = tool.annotations or {}
+        return bool(annotations.get("readOnlyHint")) and not tool.dangerous
+
+    def _cache_key(self, name: str, arguments: Dict[str, Any]) -> str:
+        clean = self._sanitize_arguments_for_ledger(arguments)
+        return f"{name}:{self._hash_arguments(clean)}"
+
+    def _get_cached_tool_result(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        key = self._cache_key(name, arguments)
+        entry = self._read_cache.get(key)
+        if not entry:
+            self._read_cache_misses += 1
+            return None
+        if time.time() > float(entry.get("expires_at", 0)):
+            self._read_cache.pop(key, None)
+            self._read_cache_misses += 1
+            return None
+        self._read_cache_hits += 1
+        return json.loads(json.dumps(entry.get("result")))
+
+    def _set_cached_tool_result(self, name: str, arguments: Dict[str, Any], result: Dict[str, Any]) -> None:
+        key = self._cache_key(name, arguments)
+        ttl = self._cache_ttl_for_tool(name)
+        self._read_cache[key] = {
+            "tool_name": name,
+            "expires_at": time.time() + ttl,
+            "stored_at": time.time(),
+            "result": json.loads(json.dumps(result)),
+        }
+        if len(self._read_cache) > 256:
+            oldest_key = min(self._read_cache, key=lambda k: self._read_cache[k].get("stored_at", 0))
+            self._read_cache.pop(oldest_key, None)
+
+    def _clear_read_cache(self, tool_name: Optional[str] = None) -> int:
+        if not tool_name:
+            removed = len(self._read_cache)
+            self._read_cache.clear()
+            return removed
+        keys = [k for k, v in self._read_cache.items() if v.get("tool_name") == tool_name]
+        for key in keys:
+            self._read_cache.pop(key, None)
+        return len(keys)
+
+    def _get_read_cache_stats_text(self) -> str:
+        by_tool: Dict[str, int] = {}
+        live_entries = 0
+        now = time.time()
+        for key, entry in list(self._read_cache.items()):
+            if now > float(entry.get("expires_at", 0)):
+                self._read_cache.pop(key, None)
+                continue
+            live_entries += 1
+            tool_name = str(entry.get("tool_name") or "unknown")
+            by_tool[tool_name] = by_tool.get(tool_name, 0) + 1
+        payload = {
+            "entries": live_entries,
+            "hits": self._read_cache_hits,
+            "misses": self._read_cache_misses,
+            "tools": by_tool,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+    def _ledger_path(self) -> Path:
+        return Path("/a0/usr/projects/mcp_server/.runtime/agent_state.json")
+
+    def _infer_action_category(self, name: str) -> str:
+        edit_tokens = ("write", "replace", "append", "move", "copy", "remove", "chmod", "chown", "rollback", "safe_edit")
+        health_tokens = ("health", "ready", "diagnose", "debug_service", "self_test")
+        if any(token in name for token in edit_tokens):
+            return "edit"
+        if any(token in name for token in health_tokens):
+            return "health"
+        return "general"
+
+    def _infer_action_target(self, arguments: Dict[str, Any]) -> str:
+        for key in ("path", "service", "project", "workspace", "project_root", "root", "working_dir", "container", "host", "port", "repo", "repo_name", "service_name"):
+            value = arguments.get(key)
+            if value not in (None, ""):
+                return str(value)
+        steps = arguments.get("steps") or []
+        if isinstance(steps, list) and steps:
+            first = steps[0] if isinstance(steps[0], dict) else {}
+            for key in ("working_dir", "label", "command"):
+                value = first.get(key) if isinstance(first, dict) else None
+                if value not in (None, ""):
+                    return str(value)
+        return ""
+
+    def _extract_result_text(self, result: Dict[str, Any]) -> str:
+        try:
+            parts = []
+            for item in result.get("content", []) or []:
+                if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    parts.append(str(item.get("text")))
+            text = "\n".join(parts).strip()
+            return text[:1000]
+        except Exception:
+            return ""
+
+    def _sanitize_arguments_for_ledger(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        clean = {}
+        for key, value in (arguments or {}).items():
+            if key == "_user":
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                clean[key] = value
+            elif isinstance(value, (list, dict)):
+                clean[key] = value
+            else:
+                clean[key] = str(value)
+        return clean
+
+    def _hash_arguments(self, arguments: Dict[str, Any]) -> str:
+        clean = self._sanitize_arguments_for_ledger(arguments)
+        payload = json.dumps(clean, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    def _fingerprint_action(self, name: str, arguments: Dict[str, Any]) -> str:
+        return f"{name}:{self._hash_arguments(arguments)}"
+
+    def _record_tool_result(self, name: str, arguments: Dict[str, Any], result: Dict[str, Any], user: str = "unknown", started_at: Optional[float] = None) -> None:
+        if name == "record_action_result":
+            return
+        path = self._ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            state = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+        state.setdefault("actions", [])
+        state.setdefault("health_snapshots", [])
+        state.setdefault("edits", [])
+        category = self._infer_action_category(name)
+        clean_args = self._sanitize_arguments_for_ledger(arguments)
+        duration_ms = None
+        if started_at is not None:
+            try:
+                duration_ms = int((time.time() - started_at) * 1000)
+            except Exception:
+                duration_ms = None
+        item = {
+            "action_name": name,
+            "status": "error" if result.get("isError") else "ok",
+            "is_error": bool(result.get("isError")),
+            "target": self._infer_action_target(arguments),
+            "details": self._extract_result_text(result),
+            "user": user,
+            "duration_ms": duration_ms,
+            "args_hash": self._hash_arguments(clean_args),
+            "call_fingerprint": self._fingerprint_action(name, clean_args),
+            "arguments": clean_args,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        state["actions"] = (state.get("actions") or [])[-199:] + [item]
+        if category == "edit":
+            state["edits"] = (state.get("edits") or [])[-199:] + [item]
+        if category == "health":
+            state["health_snapshots"] = (state.get("health_snapshots") or [])[-199:] + [item]
+        path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
     
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Get all tool definitions in MCP format."""
@@ -680,31 +912,61 @@ class MCPTools:
         user: str = "unknown"
     ) -> Dict[str, Any]:
         """Execute a tool by name."""
+        raw_arguments = dict(arguments or {})
+        started_at = time.time()
         if name not in self._tools:
-            return {
+            result = {
                 "isError": True,
                 "content": [{
                     "type": "text",
                     "text": f"Unknown tool: {name}"
                 }]
             }
-        
+            try:
+                self._record_tool_result(name, raw_arguments, result, user=user, started_at=started_at)
+            except Exception:
+                pass
+            return result
+
         tool = self._tools[name]
-        
+        cached_result = None
+        if self._is_cacheable_tool(tool, raw_arguments):
+            cached_result = self._get_cached_tool_result(name, raw_arguments)
+            if cached_result is not None:
+                return cached_result
+
         try:
-            # Add user to arguments
             arguments["_user"] = user
             result = await tool.handler(arguments)
+            if self._is_cacheable_tool(tool, raw_arguments) and not result.get("isError"):
+                try:
+                    self._set_cached_tool_result(name, raw_arguments, result)
+                except Exception as cache_error:
+                    logger.warning(f"Cache write skipped for {name}: {cache_error}")
+            elif not result.get("isError"):
+                try:
+                    self._clear_read_cache()
+                except Exception as cache_error:
+                    logger.warning(f"Cache clear skipped after {name}: {cache_error}")
+            try:
+                self._record_tool_result(name, raw_arguments, result, user=user, started_at=started_at)
+            except Exception as record_error:
+                logger.warning(f"Ledger write skipped for {name}: {record_error}")
             return result
         except Exception as e:
             logger.error(f"Tool execution error: {e}")
-            return {
+            result = {
                 "isError": True,
                 "content": [{
                     "type": "text",
                     "text": f"Error executing {name}: {str(e)}"
                 }]
             }
+            try:
+                self._record_tool_result(name, raw_arguments, result, user=user, started_at=started_at)
+            except Exception as record_error:
+                logger.warning(f"Ledger write skipped for failed {name}: {record_error}")
+            return result
     
     # Tool implementations
     
