@@ -55,9 +55,10 @@ class MCPTools:
         self._read_cache: Dict[str, Dict[str, Any]] = {}
         self._read_cache_hits = 0
         self._read_cache_misses = 0
-        self._register_all_tools()
-        # Register action router for unified tool access
+        # Register action router FIRST (fills extra_tools)
         register_action_router_tools(self)
+        # Now register all tools (includes back-compat merge of extra_tools)
+        self._register_all_tools()
     
     
     def _register_all_tools(self):
@@ -1529,6 +1530,448 @@ class MCPTools:
             }],
             "isError": False
         }
+
+    # ============================================================================
+    # UNIVERSAL ACTION ROUTER HANDLERS
+    # ============================================================================
+    
+    async def _router_read_file(self, args):
+        return await self._read_file(args)
+    
+    async def _router_list_dir(self, args):
+        path = args.get("path", "/")
+        cmd = f"ls -la '{path}'"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_exists_path(self, args):
+        path = args.get("path", "")
+        result = await self.executor.execute(f"test -e '{path}' && echo exists || echo not_exists")
+        return {"content": [{"type": "text", "text": json.dumps({"path": path, "exists": "exists" in result.stdout})}], "isError": False}
+    
+    async def _router_stat_path(self, args):
+        path = args.get("path", "")
+        result = await self.executor.execute(f"stat '{path}' 2>/dev/null || echo error")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": "error" in result.stdout}
+    
+    async def _router_tail_file(self, args):
+        path = args.get("path", "")
+        lines = args.get("lines", 100)
+        result = await self.executor.execute(f"tail -n {lines} '{path}'")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_grep_files(self, args):
+        path = args.get("path", "")
+        pattern = args.get("pattern", "")
+        recursive = "-r" if args.get("recursive", False) else ""
+        result = await self.executor.execute(f"grep {recursive} '{pattern}' '{path}' 2>/dev/null | head -50")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_find_files(self, args):
+        path = args.get("path", "/")
+        pattern = args.get("pattern", "*")
+        result = await self.executor.execute(f"find '{path}' -name '{pattern}' -maxdepth 5 | head -100")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_disk_usage(self, args):
+        path = args.get("path", "/")
+        result = await self.executor.execute(f"du -sh '{path}' 2>/dev/null")
+        return {"content": [{"type": "text", "text": result.stdout.strip()}], "isError": bool(result.exit_code)}
+    
+    async def _router_df_report(self, args):
+        result = await self.executor.execute("df -h")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_get_server_facts(self, args):
+        return await self._get_server_facts(args)
+    
+    async def _router_uptime_info(self, args):
+        result = await self.executor.execute("uptime")
+        return {"content": [{"type": "text", "text": result.stdout.strip()}], "isError": False}
+    
+    async def _router_free_memory(self, args):
+        result = await self.executor.execute("free -h")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_hostname_info(self, args):
+        result = await self.executor.execute("hostnamectl || hostname")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_env_vars(self, args):
+        filter_str = args.get("filter", "")
+        cmd = f"env | grep -i '{filter_str}' | head -50" if filter_str else "env | head -50"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_sysctl_get(self, args):
+        param = args.get("param", "")
+        cmd = f"sysctl {param}" if param else "sysctl -a | head -100"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_systemd_status(self, args):
+        return await self._systemd_status(args)
+    
+    async def _router_systemd_list_units(self, args):
+        ftype = args.get("type", "")
+        cmd = f"systemctl list-units --type={ftype} --no-pager" if ftype else "systemctl list-units --no-pager | head -50"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_systemd_list_failed(self, args):
+        result = await self.executor.execute("systemctl --failed --no-pager")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_journal_tail(self, args):
+        return await self._journal_tail(args)
+    
+    async def _router_docker_ps(self, args):
+        return await self._docker_ps(args)
+    
+    async def _router_docker_images(self, args):
+        result = await self.executor.execute("docker images")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_docker_inspect(self, args):
+        container = args.get("container", "")
+        result = await self.executor.execute(f"docker inspect {container} | head -200")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_logs(self, args):
+        return await self._docker_logs(args)
+    
+    async def _router_docker_networks(self, args):
+        result = await self.executor.execute("docker network ls")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_docker_volumes(self, args):
+        result = await self.executor.execute("docker volume ls")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_process_list(self, args):
+        user = args.get("user", "")
+        name = args.get("name", "")
+        if user:
+            cmd = f"ps -u {user}"
+        elif name:
+            cmd = f"ps aux | grep '{name}' | grep -v grep"
+        else:
+            cmd = "ps aux | head -50"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_process_info(self, args):
+        pid = args.get("pid", "")
+        result = await self.executor.execute(f"ps -p {pid} -o pid,ppid,user,cmd,stat,rss")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_port_listeners(self, args):
+        port = args.get("port", "")
+        cmd = f"ss -tlnp | grep ':{port}'" if port else "ss -tlnp"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_netstat_summary(self, args):
+        result = await self.executor.execute("ss -s")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_iptables_list(self, args):
+        result = await self.executor.execute("iptables -L -n -v | head -100", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_status(self, args):
+        result = await self.executor.execute("ufw status verbose", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_get_public_ip(self, args):
+        return await self._get_public_ip(args)
+    
+    async def _router_ping_host(self, args):
+        return await self._ping_host(args)
+    
+    async def _router_user_list(self, args):
+        result = await self.executor.execute("cat /etc/passwd | cut -d: -f1,3,6,7")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_user_info(self, args):
+        user = args.get("user", "")
+        result = await self.executor.execute(f"id {user} && getent passwd {user}")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_group_list(self, args):
+        result = await self.executor.execute("cat /etc/group | cut -d: -f1,3")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_last_logins(self, args):
+        lines = args.get("lines", 20)
+        result = await self.executor.execute(f"last -n {lines}")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_sudo_audit(self, args):
+        result = await self.executor.execute("cat /etc/sudoers && ls /etc/sudoers.d/", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_cron_list(self, args):
+        user = args.get("user", "")
+        cmd = f"crontab -u {user} -l" if user else "crontab -l"
+        result = await self.executor.execute(cmd, use_sudo=bool(user))
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_cron_list_all(self, args):
+        result = await self.executor.execute("cat /etc/crontab && ls /etc/cron.d/", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_apt_list_installed(self, args):
+        filter_str = args.get("filter", "")
+        cmd = f"dpkg -l | grep '{filter_str}' | head -50" if filter_str else "dpkg -l | head -50"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_apt_show_package(self, args):
+        package = args.get("package", "")
+        result = await self.executor.execute(f"apt show {package} 2>/dev/null")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_apt_check_updates(self, args):
+        result = await self.executor.execute("apt list --upgradable 2>/dev/null")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": False}
+    
+    async def _router_health_check(self, args):
+        return await self._health_check(args)
+    
+    async def _router_ready_check(self, args):
+        return await self._ready_check(args)
+    
+    async def _router_http_get_local(self, args):
+        return await self._http_get_local(args)
+    
+    # ==================== CONTROLLED MUTATION HANDLERS ====================
+    
+    async def _router_mkdir_p(self, args):
+        path = args.get("path", "")
+        result = await self.executor.execute(f"mkdir -p '{path}'")
+        return {"content": [{"type": "text", "text": f"Created: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_touch_file(self, args):
+        path = args.get("path", "")
+        result = await self.executor.execute(f"touch '{path}'")
+        return {"content": [{"type": "text", "text": f"Touched: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_copy_file(self, args):
+        src = args.get("src", "")
+        dst = args.get("dst", "")
+        result = await self.executor.execute(f"cp -r '{src}' '{dst}'")
+        return {"content": [{"type": "text", "text": f"Copied: {src} -> {dst}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_move_file(self, args):
+        src = args.get("src", "")
+        dst = args.get("dst", "")
+        result = await self.executor.execute(f"mv '{src}' '{dst}'")
+        return {"content": [{"type": "text", "text": f"Moved: {src} -> {dst}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_delete_file(self, args):
+        path = args.get("path", "")
+        force = args.get("force", False)
+        # Safety check
+        if any(p in path for p in ["/etc", "/usr", "/bin", "/sbin", "/lib", "/root", "/home", "/var/lib"]):
+            return {"content": [{"type": "text", "text": f"Safety block: Cannot delete system path {path}"}], "isError": True}
+        cmd = f"rm -rf '{path}'" if force else f"rm -f '{path}'"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": f"Deleted: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_chmod_path(self, args):
+        path = args.get("path", "")
+        mode = args.get("mode", "644")
+        result = await self.executor.execute(f"chmod {mode} '{path}'")
+        return {"content": [{"type": "text", "text": f"chmod {mode} {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_chown_path(self, args):
+        path = args.get("path", "")
+        owner = args.get("owner", "")
+        group = args.get("group", "")
+        spec = f"{owner}:{group}" if group else owner
+        result = await self.executor.execute(f"chown {spec} '{path}'", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"chown {spec} {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_backup_file(self, args):
+        path = args.get("path", "")
+        suffix = args.get("suffix", ".bak")
+        result = await self.executor.execute(f"cp '{path}' '{path}{suffix}'")
+        return {"content": [{"type": "text", "text": f"Backup: {path}{suffix}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_restore_backup(self, args):
+        path = args.get("path", "")
+        suffix = args.get("suffix", ".bak")
+        result = await self.executor.execute(f"cp '{path}{suffix}' '{path}'")
+        return {"content": [{"type": "text", "text": f"Restored: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_write_file_safe(self, args):
+        path = args.get("path", "")
+        content = args.get("content", "")
+        await self.executor.execute(f"cp '{path}' '{path}.bak' 2>/dev/null")
+        # Use echo with escaping
+        escaped = content.replace("'", "'\''")
+        result = await self.executor.execute(f"echo '{escaped}' > '{path}'")
+        return {"content": [{"type": "text", "text": f"Written: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_append_file(self, args):
+        path = args.get("path", "")
+        content = args.get("content", "")
+        escaped = content.replace("'", "'\''")
+        result = await self.executor.execute(f"echo '{escaped}' >> '{path}'")
+        return {"content": [{"type": "text", "text": f"Appended: {path}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_service_start(self, args):
+        service = args.get("service", "")
+        result = await self.executor.execute(f"systemctl start {service}", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Started: {service}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_service_stop(self, args):
+        service = args.get("service", "")
+        result = await self.executor.execute(f"systemctl stop {service}", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Stopped: {service}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_service_restart(self, args):
+        service = args.get("service", "")
+        return await self._systemd_restart({"service": service})
+    
+    async def _router_service_reload(self, args):
+        service = args.get("service", "")
+        result = await self.executor.execute(f"systemctl reload {service}", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Reloaded: {service}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_service_enable(self, args):
+        service = args.get("service", "")
+        result = await self.executor.execute(f"systemctl enable {service}", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Enabled: {service}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_service_disable(self, args):
+        service = args.get("service", "")
+        result = await self.executor.execute(f"systemctl disable {service}", use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Disabled: {service}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_daemon_reload(self, args):
+        result = await self.executor.execute("systemctl daemon-reload", use_sudo=True)
+        return {"content": [{"type": "text", "text": "Daemon reloaded"}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_start(self, args):
+        container = args.get("container", "")
+        result = await self.executor.execute(f"docker start {container}")
+        return {"content": [{"type": "text", "text": f"Started: {container}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_stop(self, args):
+        container = args.get("container", "")
+        timeout = args.get("timeout", 10)
+        result = await self.executor.execute(f"docker stop -t {timeout} {container}")
+        return {"content": [{"type": "text", "text": f"Stopped: {container}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_restart(self, args):
+        container = args.get("container", "")
+        timeout = args.get("timeout", 10)
+        result = await self.executor.execute(f"docker restart -t {timeout} {container}")
+        return {"content": [{"type": "text", "text": f"Restarted: {container}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_pull(self, args):
+        image = args.get("image", "")
+        result = await self.executor.execute(f"docker pull {image}")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_prune(self, args):
+        ptype = args.get("type", "")
+        cmd = f"docker {ptype} prune -f" if ptype else "docker system prune -f"
+        result = await self.executor.execute(cmd)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_rm(self, args):
+        container = args.get("container", "")
+        force = "-f" if args.get("force", False) else ""
+        result = await self.executor.execute(f"docker rm {force} {container}")
+        return {"content": [{"type": "text", "text": f"Removed: {container}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_docker_rmi(self, args):
+        image = args.get("image", "")
+        force = "-f" if args.get("force", False) else ""
+        result = await self.executor.execute(f"docker rmi {force} {image}")
+        return {"content": [{"type": "text", "text": f"Removed image: {image}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_apt_install(self, args):
+        packages = args.get("packages", [])
+        if isinstance(packages, str): packages = [packages]
+        pkg_str = " ".join(packages)
+        result = await self.executor.execute(f"apt install -y {pkg_str}", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_apt_remove(self, args):
+        packages = args.get("packages", [])
+        if isinstance(packages, str): packages = [packages]
+        pkg_str = " ".join(packages)
+        result = await self.executor.execute(f"apt remove -y {pkg_str}", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_apt_update(self, args):
+        result = await self.executor.execute("apt update", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_apt_upgrade(self, args):
+        dist = "dist-upgrade" if args.get("dist", False) else "upgrade"
+        result = await self.executor.execute(f"apt {dist} -y", use_sudo=True)
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_allow_port(self, args):
+        port = args.get("port", "")
+        proto = args.get("proto", "")
+        cmd = f"ufw allow {port}/{proto}" if proto else f"ufw allow {port}"
+        result = await self.executor.execute(cmd, use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Allowed: {port}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_deny_port(self, args):
+        port = args.get("port", "")
+        proto = args.get("proto", "")
+        cmd = f"ufw deny {port}/{proto}" if proto else f"ufw deny {port}"
+        result = await self.executor.execute(cmd, use_sudo=True)
+        return {"content": [{"type": "text", "text": f"Denied: {port}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_enable(self, args):
+        result = await self.executor.execute("ufw --force enable", use_sudo=True)
+        return {"content": [{"type": "text", "text": "UFW enabled"}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_disable(self, args):
+        result = await self.executor.execute("ufw disable", use_sudo=True)
+        return {"content": [{"type": "text", "text": "UFW disabled"}], "isError": bool(result.exit_code)}
+    
+    async def _router_ufw_reset(self, args):
+        result = await self.executor.execute("ufw reset", use_sudo=True)
+        return {"content": [{"type": "text", "text": "UFW reset"}], "isError": bool(result.exit_code)}
+    
+    async def _router_cron_add(self, args):
+        user = args.get("user", "")
+        schedule = args.get("schedule", "")
+        command = args.get("command", "")
+        entry = f"{schedule} {command}"
+        cmd = f"(crontab -u {user} -l 2>/dev/null; echo '{entry}') | crontab -u {user} -" if user else f"(crontab -l 2>/dev/null; echo '{entry}') | crontab -"
+        result = await self.executor.execute(cmd, use_sudo=bool(user))
+        return {"content": [{"type": "text", "text": f"Cron added: {entry}"}], "isError": bool(result.exit_code)}
+    
+    async def _router_cron_remove(self, args):
+        user = args.get("user", "")
+        line = args.get("line", "")
+        cmd = f"crontab -u {user} -l | sed '{line}d' | crontab -u {user} -" if user else f"crontab -l | sed '{line}d' | crontab -"
+        result = await self.executor.execute(cmd, use_sudo=bool(user))
+        return {"content": [{"type": "text", "text": f"Cron line {line} removed"}], "isError": bool(result.exit_code)}
+    
+    async def _router_bash_command(self, args):
+        return await self._run_command(args)
+    
+    async def _router_docker_exec(self, args):
+        return await self._docker_exec(args)
+    
+    async def _router_script_run(self, args):
+        path = args.get("path", "")
+        script_args = args.get("args", "")
+        result = await self.executor.execute(f"bash '{path}' {script_args}")
+        return {"content": [{"type": "text", "text": result.stdout}], "isError": bool(result.exit_code)}
+
+
 
 def register_tools(ssh_client: SSHClient) -> MCPTools:
     """Create and return MCP tools instance."""
