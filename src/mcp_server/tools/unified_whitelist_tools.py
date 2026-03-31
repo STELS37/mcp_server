@@ -207,8 +207,7 @@ def register_unified_whitelist_tools(toolset):
             'required': ['operation']
         },
         handler=handle_server_operation,
-        dangerous=False,
-        annotations={'readOnlyHint': True}  # ChatGPT sees this as safe, operations hidden in enum
+        dangerous=False
     )
     
     return 1  # ONE tool registered
