@@ -206,25 +206,124 @@ async def handle_server_operation(arguments: Dict[str, Any]) -> Dict[str, Any]:
             'isError': True
         }
 
+# ========================================
+# FUNCTIONAL HANDLERS (with parameters)
+# ========================================
+
+async def handle_server_task(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a shell task."""
+    task = arguments.get('task', '')
+    if not task:
+        return {'content': [{'type': 'text', 'text': 'Error: No task provided'}], 'isError': True}
+    
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            task,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode('utf-8', errors='replace')[:5000]
+        error_msg = stderr.decode('utf-8', errors='replace')[:2000] if stderr else ''
+        result_text = output if proc.returncode == 0 else f"Error: {error_msg}\nOutput: {output}"
+        return {'content': [{'type': 'text', 'text': result_text}], 'isError': proc.returncode != 0}
+    except Exception as e:
+        return {'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}], 'isError': True}
+
+
+async def handle_file_content(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get file content."""
+    path = arguments.get('path', '')
+    if not path:
+        return {'content': [{'type': 'text', 'text': 'Error: No path provided'}], 'isError': True}
+    
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read(50000)
+        return {'content': [{'type': 'text', 'text': content}], 'isError': False}
+    except Exception as e:
+        return {'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}], 'isError': True}
+
+
+async def handle_file_update(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Update file content."""
+    path = arguments.get('path', '')
+    content = arguments.get('content', '')
+    if not path:
+        return {'content': [{'type': 'text', 'text': 'Error: No path provided'}], 'isError': True}
+    
+    try:
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return {'content': [{'type': 'text', 'text': f'Updated: {path} ({len(content)} bytes)'}], 'isError': False}
+    except Exception as e:
+        return {'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}], 'isError': True}
+
+
+async def handle_directory_list(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """List directory contents."""
+    path = arguments.get('path', '')
+    if not path:
+        return {'content': [{'type': 'text', 'text': 'Error: No path provided'}], 'isError': True}
+    
+    try:
+        import os
+        entries = []
+        for entry in sorted(os.listdir(path)):
+            full_path = os.path.join(path, entry)
+            is_dir = os.path.isdir(full_path)
+            size = os.path.getsize(full_path) if not is_dir else 0
+            entries.append(f"{'[DIR]' if is_dir else '[FILE]'} {entry} ({size} bytes)")
+        result = '\n'.join(entries[:100]) or '(empty directory)'
+        return {'content': [{'type': 'text', 'text': result}], 'isError': False}
+    except Exception as e:
+        return {'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}], 'isError': True}
+
+
+async def handle_container_task(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute task in container."""
+    container = arguments.get('container', '')
+    task = arguments.get('task', '')
+    if not container or not task:
+        return {'content': [{'type': 'text', 'text': 'Error: container and task required'}], 'isError': True}
+    
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            f"docker exec {container} {task}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode('utf-8', errors='replace')[:5000]
+        error_msg = stderr.decode('utf-8', errors='replace')[:2000] if stderr else ''
+        result_text = output if proc.returncode == 0 else f"Error: {error_msg}\nOutput: {output}"
+        return {'content': [{'type': 'text', 'text': result_text}], 'isError': proc.returncode != 0}
+    except Exception as e:
+        return {'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}], 'isError': True}
+
 
 # ========================================
-# REGISTER SINGLE TOOL
+# REGISTER ALL TOOLS
 # ========================================
 
 def register_unified_whitelist_tools(toolset):
-    """Register ONE router tool for ALL operations."""
+    """Register ALL tools: 1 router + 5 functional."""
+    count = 0
     
+    # === Router tool (hardcoded whitelist) ===
     register_extra_tool(
         toolset,
         name='server_operation',
-        description='Execute a server operation by name. Operations include system info, docker status, service management, git sync, and cleanup tasks.',
+        description='Execute a predefined server operation by name.',
         input_schema={
             'type': 'object',
             'properties': {
                 'operation': {
                     'type': 'string',
                     'enum': list(ALL_OPERATIONS.keys()),
-                    'description': 'Operation to execute'
+                    'description': 'Predefined operation to execute'
                 }
             },
             'required': ['operation']
@@ -232,5 +331,89 @@ def register_unified_whitelist_tools(toolset):
         handler=handle_server_operation,
         dangerous=False
     )
+    count += 1
     
-    return 1  # ONE tool registered
+    # === Functional tools (with parameters) ===
+    register_extra_tool(
+        toolset,
+        name='server_task',
+        description='Execute a shell task on the server.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'task': {'type': 'string', 'description': 'Shell task to execute'}
+            },
+            'required': ['task']
+        },
+        handler=handle_server_task,
+        dangerous=False
+    )
+    count += 1
+    
+    register_extra_tool(
+        toolset,
+        name='file_content',
+        description='Get content of a file.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'path': {'type': 'string', 'description': 'File path to read'}
+            },
+            'required': ['path']
+        },
+        handler=handle_file_content,
+        dangerous=False
+    )
+    count += 1
+    
+    register_extra_tool(
+        toolset,
+        name='file_update',
+        description='Update content of a file.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'path': {'type': 'string', 'description': 'File path to update'},
+                'content': {'type': 'string', 'description': 'Content to write'}
+            },
+            'required': ['path', 'content']
+        },
+        handler=handle_file_update,
+        dangerous=False
+    )
+    count += 1
+    
+    register_extra_tool(
+        toolset,
+        name='directory_list',
+        description='List contents of a directory.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'path': {'type': 'string', 'description': 'Directory path to list'}
+            },
+            'required': ['path']
+        },
+        handler=handle_directory_list,
+        dangerous=False
+    )
+    count += 1
+    
+    register_extra_tool(
+        toolset,
+        name='container_task',
+        description='Execute a task inside a container.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'container': {'type': 'string', 'description': 'Container name'},
+                'task': {'type': 'string', 'description': 'Task to execute in container'}
+            },
+            'required': ['container', 'task']
+        },
+        handler=handle_container_task,
+        dangerous=False
+    )
+    count += 1
+    
+    return count  # 6 tools registered
