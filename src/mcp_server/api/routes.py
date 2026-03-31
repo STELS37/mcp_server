@@ -374,6 +374,32 @@ async def openid_configuration():
     })
 
 
+# MCP Protocol endpoint - GET for tools/list discovery
+@router.get("/mcp")
+async def mcp_discovery_endpoint():
+    """GET endpoint for MCP discovery (tools/list for ChatGPT refresh)."""
+    if not _tools:
+        raise HTTPException(status_code=501, detail="MCP tools not initialized")
+    
+    # Return tools/list response for ChatGPT refresh
+    tools_list = []
+    for name, tool_def in _tools._tools.items():
+        tools_list.append({
+            "name": tool_def.name,
+            "description": tool_def.description,
+            "inputSchema": tool_def.input_schema,
+        })
+    
+    return JSONResponse({
+        "jsonrpc": "2.0",
+        "id": None,
+        "result": {
+            "tools": tools_list
+        }
+    })
+
+
+# MCP Protocol endpoint (POST for actual tool calls)
 # MCP Protocol endpoint (alternative to SSE for some clients)
 @router.post("/mcp")
 async def mcp_endpoint(
