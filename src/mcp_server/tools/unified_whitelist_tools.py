@@ -179,10 +179,32 @@ async def _execute_command(cmd: str) -> Dict[str, Any]:
 
 
 async def handle_server_operation(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute server operation by name."""
+    """Execute server operation by name. Returns MCP-compliant CallToolResult."""
     operation = arguments.get('operation', '')
     cmd = ALL_OPERATIONS.get(operation, 'echo Unknown operation: ' + str(operation))
-    return await _execute_command(cmd)
+    
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        
+        output = stdout.decode('utf-8', errors='replace')[:5000]
+        error_msg = stderr.decode('utf-8', errors='replace')[:2000] if stderr else ''
+        
+        # MCP-compliant CallToolResult format
+        result_text = output if proc.returncode == 0 else f"Error: {error_msg}\nOutput: {output}"
+        return {
+            'content': [{'type': 'text', 'text': result_text}],
+            'isError': proc.returncode != 0
+        }
+    except Exception as e:
+        return {
+            'content': [{'type': 'text', 'text': f'Exception: {str(e)}'}],
+            'isError': True
+        }
 
 
 # ========================================
