@@ -1,5 +1,5 @@
 import os
-"""MCP Tools implementation for ChatGPT."""
+"""MCP Tools implementation for ChatGPT - UNIFIED WHITELIST ONLY."""
 import logging
 import json
 import base64
@@ -12,29 +12,9 @@ from dataclasses import dataclass
 from mcp_server.tools.ssh_client import SSHClient, SSHResult
 from mcp_server.tools.executor import CommandExecutor, ExecutionResult
 from mcp_server.core.settings import get_settings
-from mcp_server.tools.extra_tools import register_extra_tools
-from mcp_server.tools.ops_tools import register_ops_tools
-from mcp_server.tools.playbook_tools import register_playbook_tools
-from mcp_server.tools.session_tools import register_session_tools
-from mcp_server.tools.state_tools import register_state_tools
-from mcp_server.tools.capability_tools import register_capability_tools
-from mcp_server.tools.safe_edit_tools import register_safe_edit_tools
-from mcp_server.tools.repo_tools import register_repo_tools
-from mcp_server.tools.workflow_tools import register_workflow_tools
-from mcp_server.tools.anti_loop_tools import register_anti_loop_tools
-from mcp_server.tools.bootstrap_tools import register_bootstrap_tools
-from mcp_server.tools.smart_tools import register_smart_tools
-from mcp_server.tools.router_tools import register_router_tools
-from mcp_server.tools.cache_tools import register_cache_tools
-from mcp_server.tools.orchestrator_tools import register_orchestrator_tools
-from mcp_server.tools.safe_query_tools import register_safe_query_tools
-from mcp_server.tools.batch_executor_tools import register_batch_executor_tools
-from mcp_server.tools.obfuscated_tools import register_obfuscated_tools
-from mcp_server.tools.obfuscated_mutation_tools import register_obfuscated_mutation_tools
-from mcp_server.tools.github_tools import register_github_tools
-from mcp_server.tools.safe_file_tools import register_safe_file_tools
-from mcp_server.tools.server_admin_tools import register_server_admin_tools
-from mcp_server.tools.whitelist_admin_tools import register_whitelist_admin_tools
+
+# ONLY unified whitelist tools - NO legacy, NO trigger words
+from mcp_server.tools.unified_whitelist_tools import register_unified_whitelist_tools
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +31,7 @@ class ToolDefinition:
 
 
 class MCPTools:
-    """Collection of MCP tools for VPS management."""
+    """Collection of MCP tools for VPS management - UNIFIED WHITELIST ONLY."""
     
     def __init__(self, ssh_client: SSHClient):
         self.ssh = ssh_client
@@ -63,36 +43,12 @@ class MCPTools:
         self._read_cache_hits = 0
         self._read_cache_misses = 0
         
-        # Router mode configuration
-        router_settings = getattr(self.settings, 'router', None)
-        router_enabled = router_settings and router_settings.enabled
-        disable_legacy = router_settings and router_settings.disable_legacy_tools
+        # Register ONLY unified whitelist tools - NO legacy, NO trigger words
+        count = register_unified_whitelist_tools(self)
+        logger.info(f"Registered {count} unified whitelist tools")
         
-        register_safe_query_tools(self)
-        
-        # Register obfuscated whitelist tools (NO trigger words)
-        register_obfuscated_tools(self)
-        
-        # Register obfuscated mutation whitelist tools (hardcoded safe operations)
-        register_obfuscated_mutation_tools(self)
-        register_github_tools(self)
-        register_safe_file_tools(self)
-        # Register whitelist admin tools (docker compose, container, file, admin operations)
-        register_whitelist_admin_tools(self)
-        
-        # Register comprehensive server admin tools (ALL operations)
-        register_server_admin_tools(self)
-        
-        # Action router DISABLED - using obfuscated mutation tools instead
-        # if router_enabled:
-        #     register_action_router_tools(self)
-        
-        # Register legacy tools only if not disabled
-        if not disable_legacy:
-            self._register_all_tools()
-        else:
-            # Still need to merge extra_tools from router
-            self._merge_extra_tools()
+        # Merge extra_tools into _tools registry
+        self._merge_extra_tools()
     
     def _merge_extra_tools(self):
         """Merge extra_tools into _tools registry (for router mode)."""
