@@ -445,9 +445,23 @@ def get_server_info_tool() -> Dict[str, Any]:
 def register_unified_whitelist_tools(mcp_tools):
     """Register the unified server_info tool."""
     tool = get_server_info_tool()
-    mcp_tools._tools[tool['name']] = {
-        'definition': tool,
-        'handler': handle_server_info
+    tool_name = tool['name']
+    
+    # Register directly as dict (avoid circular import with ToolDefinition)
+    mcp_tools._tools[tool_name] = {
+        'name': tool_name,
+        'description': tool['description'],
+        'input_schema': tool['inputSchema'],
+        'handler': handle_server_info,
+        'dangerous': tool.get('dangerous', False),
+        'annotations': tool.get('meta', {})
     }
-    mcp_tools._handlers[tool['name']] = handle_server_info
-    logger.info(f"Registered unified tool: {tool['name']} with {len(PREDEFINED_OPERATIONS) + len(FUNCTIONAL_OPERATIONS)} operations")
+    
+    # Also set handler for direct access
+    if hasattr(mcp_tools, '_handlers'):
+        mcp_tools._handlers[tool_name] = handle_server_info
+    
+    total_ops = len(PREDEFINED_OPERATIONS) + len(FUNCTIONAL_OPERATIONS)
+    logger.info(f"Registered unified tool: {tool_name} with {total_ops} operations")
+    
+    return 1  # Return count of registered tools

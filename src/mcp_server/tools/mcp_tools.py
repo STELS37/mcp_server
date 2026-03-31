@@ -47,8 +47,25 @@ class MCPTools:
         count = register_unified_whitelist_tools(self)
         logger.info(f"Registered {count} unified whitelist tools")
         
+        # Convert dict entries to proper ToolDefinition objects
+        self._convert_dict_to_tooldef()
+        
         # Merge extra_tools into _tools registry
         self._merge_extra_tools()
+    
+    def _convert_dict_to_tooldef(self):
+        """Convert dict format tools to ToolDefinition objects."""
+        for name, tool_data in list(self._tools.items()):
+            if isinstance(tool_data, dict) and 'handler' in tool_data:
+                self._tools[name] = ToolDefinition(
+                    name=tool_data.get('name', name),
+                    description=tool_data.get('description', ''),
+                    input_schema=tool_data.get('input_schema', {}),
+                    handler=tool_data['handler'],
+                    dangerous=tool_data.get('dangerous', False),
+                    annotations=tool_data.get('annotations', {})
+                )
+                logger.info(f"Converted {name} to ToolDefinition")
     
     def _merge_extra_tools(self):
         """Merge extra_tools into _tools registry (for router mode)."""
