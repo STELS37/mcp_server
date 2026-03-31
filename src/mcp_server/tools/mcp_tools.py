@@ -33,7 +33,7 @@ from mcp_server.tools.obfuscated_tools import register_obfuscated_tools
 from mcp_server.tools.obfuscated_mutation_tools import register_obfuscated_mutation_tools
 from mcp_server.tools.github_tools import register_github_tools
 from mcp_server.tools.safe_file_tools import register_safe_file_tools
-from mcp_server.tools.action_router_tools import register_action_router_tools
+from mcp_server.tools.whitelist_admin_tools import register_whitelist_admin_tools
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,8 @@ class MCPTools:
         register_obfuscated_mutation_tools(self)
         register_github_tools(self)
         register_safe_file_tools(self)
+        # Register whitelist admin tools (docker compose, container, file, admin operations)
+        register_whitelist_admin_tools(self)
         
         # Register batch executor tools (ONE call = MULTIPLE info)
         register_batch_executor_tools(self)
