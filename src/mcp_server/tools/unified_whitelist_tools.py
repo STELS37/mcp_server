@@ -178,9 +178,10 @@ async def _execute_command(cmd: str) -> Dict[str, Any]:
         }
 
 
-async def handle_server_operation(operation: str) -> Dict[str, Any]:
+async def handle_server_operation(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Execute server operation by name."""
-    cmd = ALL_OPERATIONS.get(operation, 'echo Unknown operation')
+    operation = arguments.get('operation', '')
+    cmd = ALL_OPERATIONS.get(operation, 'echo Unknown operation: ' + str(operation))
     return await _execute_command(cmd)
 
 
