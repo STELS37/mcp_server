@@ -26,6 +26,9 @@ class ExtraToolDefinition:
 def _ro(title: str) -> Dict[str, Any]:
     return {"title": title, "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 
+def _rw(title: str, destructive: bool = False) -> Dict[str, Any]:
+    return {"title": title, "readOnlyHint": False, "destructiveHint": destructive, "idempotentHint": False, "openWorldHint": False}
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -643,44 +646,68 @@ def _record_action(action_type: str, payload: Dict[str, Any], result: Dict[str, 
     _save_json(ACTION_ROUTER_STATE_PATH, state)
 
 def register_action_router_tools(toolset) -> None:
+    """Register split tools: server_query (read-only) and server_manage (mutation)."""
+    
+    # Define read-only actions (safe for autonomous execution)
+    READ_ONLY_ACTIONS = [
+        "read_file", "list_dir", "stat_path", "exists_path", "tail_file", "grep_file",
+        "find_files", "disk_usage", "df_report", "tree", "du_path",
+        "hostname", "uptime", "kernel_info", "cpu_info", "memory_info", "disk_info",
+        "env_vars", "timezone", "get_public_ip", "ping_host",
+        "systemd_status", "systemd_list_units", "systemd_list_failed", "journal_tail",
+        "docker_ps", "docker_images", "docker_containers", "docker_networks", "docker_volumes", "docker_logs",
+        "process_list", "process_info", "port_listeners", "netstat_summary",
+        "iptables_list", "ufw_status",
+        "user_list", "group_list", "whoami", "last_logins",
+        "apt_list", "dpkg_info",
+        "service_status", "http_get_local",
+        "get_server_facts", "get_action_history"
+    ]
+    
+    # Define mutation/admin actions (require confirmation)
+    MUTATION_ACTIONS = [
+        "mkdir", "rm", "mv", "cp", "touch", "chmod", "chown", "symlink",
+        "archive_create", "archive_extract",
+        "service_start", "service_stop", "service_restart", "service_reload",
+        "docker_restart", "docker_exec",
+        "apt_install", "apt_remove",
+        "bash_command", "crontab_edit",
+        "ufw_enable", "ufw_disable", "ufw_allow", "ufw_deny",
+        "write_file", "replace_in_file",
+        "reboot_server"
+    ]
+
     async def list_server_actions(args: Dict[str, Any]) -> Dict[str, Any]:
-        by_risk = {}
-        for action_type, spec in ACTION_SPECS.items():
-            risk = spec.get("risk", "unknown")
-            if risk not in by_risk:
-                by_risk[risk] = []
-            by_risk[risk].append(action_type)
         return {
             "content": [{
                 "type": "text",
                 "text": json.dumps({
-                    "total": len(ACTION_SPECS),
-                    "by_risk": by_risk,
-                    "actions": {k: {"risk": v["risk"], "desc": v.get("description", "")} for k, v in ACTION_SPECS.items()}
+                    "read_only_actions": READ_ONLY_ACTIONS,
+                    "mutation_actions": MUTATION_ACTIONS,
+                    "total": len(READ_ONLY_ACTIONS) + len(MUTATION_ACTIONS)
                 }, indent=2)
             }],
             "isError": False
         }
 
-    async def execute_server_action(args: Dict[str, Any]) -> Dict[str, Any]:
+    async def server_query(args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute read-only server query actions without confirmation."""
         action_type = args.get("action_type", "").strip()
         payload_str = args.get("payload", "{}")
         user = args.get("_user", "unknown")
-        preview = args.get("preview", False)
         use_cache = args.get("use_cache", True)
 
-        if action_type not in ACTION_SPECS:
-            return {"content": [{"type": "text", "text": f"Unknown action_type: {action_type}\nUse list_server_actions to see all 70+ supported actions."}], "isError": True}
+        if action_type not in READ_ONLY_ACTIONS:
+            return {"content": [{"type": "text", "text": f"Action '{action_type}' not allowed in server_query. Use server_manage for mutation actions.\nRead-only actions: {READ_ONLY_ACTIONS[:10]}..."}], "isError": True}
 
-        spec = ACTION_SPECS[action_type]
+        spec = ACTION_SPECS.get(action_type)
+        if not spec:
+            return {"content": [{"type": "text", "text": f"Unknown action: {action_type}"}], "isError": True}
 
         try:
             payload = _normalize_payload(payload_str)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Payload error: {e}"}], "isError": True}
-
-        if preview:
-            return {"content": [{"type": "text", "text": json.dumps({"preview": True, "action_type": action_type, "risk": spec["risk"], "handler": spec["handler_method"], "args": spec.get("args", {}), "payload": payload}, indent=2)}], "isError": False}
 
         if spec.get("cacheable") and use_cache:
             fingerprint = _payload_fingerprint(action_type, payload)
@@ -691,7 +718,7 @@ def register_action_router_tools(toolset) -> None:
         handler_method = spec.get("handler_method")
         handler = getattr(toolset, handler_method, None)
         if not handler:
-            return {"content": [{"type": "text", "text": f"Handler not found: {handler_method}. This action needs a handler implementation."}], "isError": True}
+            return {"content": [{"type": "text", "text": f"Handler not found: {handler_method}"}], "isError": True}
 
         try:
             result = await handler(payload)
@@ -705,16 +732,93 @@ def register_action_router_tools(toolset) -> None:
 
         return result
 
+    async def server_manage(args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute mutation/admin actions (requires confirmation in ChatGPT)."""
+        action_type = args.get("action_type", "").strip()
+        payload_str = args.get("payload", "{}")
+        user = args.get("_user", "unknown")
+
+        spec = ACTION_SPECS.get(action_type)
+        if not spec:
+            return {"content": [{"type": "text", "text": f"Unknown action: {action_type}"}], "isError": True}
+
+        try:
+            payload = _normalize_payload(payload_str)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Payload error: {e}"}], "isError": True}
+
+        handler_method = spec.get("handler_method")
+        handler = getattr(toolset, handler_method, None)
+        if not handler:
+            return {"content": [{"type": "text", "text": f"Handler not found: {handler_method}"}], "isError": True}
+
+        try:
+            result = await handler(payload)
+        except Exception as e:
+            result = {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {e}"}], "isError": True}
+
+        _record_action(action_type, payload, result, user)
+        return result
+
     async def get_action_history(args: Dict[str, Any]) -> Dict[str, Any]:
         limit = int(args.get("limit", 20))
         state = _load_json(ACTION_ROUTER_STATE_PATH, {"history": []})
         history = list(state.get("history", []))[-limit:]
         return {"content": [{"type": "text", "text": json.dumps(history, indent=2)}], "isError": False}
 
+    # Register tools with explicit separation
     tools = [
-        ExtraToolDefinition("execute_server_action", "Universal router for 70+ server admin actions. Execute without per-action confirmations. preview=true to preview. Use list_server_actions to see all types.", {"type": "object", "properties": {"action_type": {"type": "string"}, "payload": {"type": "string", "description": "JSON object with args"}, "preview": {"type": "boolean", "default": False}, "use_cache": {"type": "boolean", "default": True}}, "required": ["action_type"]}, execute_server_action, False, _ro("Execute Server Action")),
-        ExtraToolDefinition("list_server_actions", "List all 70+ supported server actions grouped by risk level.", {"type": "object", "properties": {}, "required": []}, list_server_actions, False, _ro("List Server Actions")),
-        ExtraToolDefinition("get_action_history", "Get recent action execution history.", {"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []}, get_action_history, False, _ro("Get Action History")),
+        # READ-ONLY tool - NO confirmation needed
+        ExtraToolDefinition(
+            "server_query",
+            "Query server state: status, logs, files, processes, containers. Read-only operations only. No modifications. Safe for autonomous execution.",
+            {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": READ_ONLY_ACTIONS,
+                        "description": "Read-only query action"
+                    },
+                    "payload": {
+                        "type": "string",
+                        "description": "JSON args"
+                    },
+                    "use_cache": {
+                        "type": "boolean",
+                        "default": True
+                    }
+                },
+                "required": ["action_type"]
+            },
+            server_query,
+            False,
+            _ro("Server Query")
+        ),
+        # MUTATION tool - confirmation needed
+        ExtraToolDefinition(
+            "server_manage",
+            "Manage server: restart services, modify files, run commands. Mutation operations that change server state.",
+            {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "description": "Mutation action type"
+                    },
+                    "payload": {
+                        "type": "string",
+                        "description": "JSON args"
+                    }
+                },
+                "required": ["action_type"]
+            },
+            server_manage,
+            True,  # dangerous=True
+            _rw("Server Manage", destructive=True)  # NO readOnlyHint
+        ),
+        ExtraToolDefinition("list_server_actions", "List all available server actions separated by type.", {"type": "object", "properties": {}, "required": []}, list_server_actions, False, _ro("List Actions")),
+        ExtraToolDefinition("get_action_history", "Get recent action execution history.", {"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []}, get_action_history, False, _ro("Get History")),
     ]
     for t in tools:
         toolset._register_tool(t)
