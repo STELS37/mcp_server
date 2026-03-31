@@ -27,6 +27,7 @@ from mcp_server.tools.smart_tools import register_smart_tools
 from mcp_server.tools.router_tools import register_router_tools
 from mcp_server.tools.cache_tools import register_cache_tools
 from mcp_server.tools.orchestrator_tools import register_orchestrator_tools
+from mcp_server.tools.safe_query_tools import register_safe_query_tools
 from mcp_server.tools.action_router_tools import register_action_router_tools
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,10 @@ class MCPTools:
         router_enabled = router_settings and router_settings.enabled
         disable_legacy = router_settings and router_settings.disable_legacy_tools
         
-        # Register action router FIRST (fills extra_tools)
+        # Always register safe read-only query tools (no confirm needed)
+        register_safe_query_tools(self)
+        
+        # Register action router for mutation operations only
         if router_enabled:
             register_action_router_tools(self)
         

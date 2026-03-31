@@ -766,35 +766,8 @@ def register_action_router_tools(toolset) -> None:
         history = list(state.get("history", []))[-limit:]
         return {"content": [{"type": "text", "text": json.dumps(history, indent=2)}], "isError": False}
 
-    # Register tools with explicit separation
+    # Register only mutation tools (read-only handled by safe_query_tools)
     tools = [
-        # READ-ONLY tool - NO confirmation needed
-        ExtraToolDefinition(
-            "server_query",
-            "Query server state: status, logs, files, processes, containers. Read-only operations only. No modifications. Safe for autonomous execution.",
-            {
-                "type": "object",
-                "properties": {
-                    "action_type": {
-                        "type": "string",
-                        "enum": READ_ONLY_ACTIONS,
-                        "description": "Read-only query action"
-                    },
-                    "payload": {
-                        "type": "string",
-                        "description": "JSON args"
-                    },
-                    "use_cache": {
-                        "type": "boolean",
-                        "default": True
-                    }
-                },
-                "required": ["action_type"]
-            },
-            server_query,
-            False,
-            _ro("Server Query")
-        ),
         # MUTATION tool - confirmation needed
         ExtraToolDefinition(
             "server_manage",
