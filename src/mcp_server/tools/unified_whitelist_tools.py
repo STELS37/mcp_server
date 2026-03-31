@@ -113,6 +113,19 @@ WHITELIST_READ_ONLY = {
     'git_log': 'git log --oneline -10',
     'git_diff': 'git diff --stat',
     
+    # === MCP REPO FILES (read) ===
+    'mcp_file_pyproject': 'cat /a0/usr/projects/mcp_server/pyproject.toml',
+    'mcp_file_readme': 'cat /a0/usr/projects/mcp_server/README.md',
+    'mcp_file_settings': 'cat /a0/usr/projects/mcp_server/config/settings.yaml',
+    'mcp_file_compose': 'cat /a0/usr/projects/mcp_server/docker-compose.yml',
+    'mcp_file_service': 'cat /a0/usr/projects/mcp_server/src/mcp_server/tools/mcp_tools.py | head -100',
+    'mcp_file_unified': 'cat /a0/usr/projects/mcp_server/src/mcp_server/tools/unified_whitelist_tools.py | head -50',
+    
+    # === DOCKER LOGS (specific containers) ===
+    'container_log_openhands': 'docker logs openhands-app --tail 50',
+    'container_log_keycloak': 'docker logs mcp-keycloak --tail 50',
+    'container_log_agent': 'docker logs oh-agent-server-3zePNLFnvXut5z1uHvlrtO --tail 50',
+    
     # === LOGS INFO ===
     'logs_mcp_recent': 'journalctl -u mcp-server -n 30 --no-pager',
     'logs_nginx_recent': 'journalctl -u nginx -n 30 --no-pager',
@@ -142,15 +155,14 @@ WHITELIST_READ_ONLY = {
 
 
 WHITELIST_MUTATION = {
-    # === DOCKER COMPOSE (hardcoded projects) ===
+    # === DOCKER COMPOSE (correct paths) ===
     'compose_up_openhands': 'cd /opt/openhands && docker compose up -d',
     'compose_down_openhands': 'cd /opt/openhands && docker compose down',
     'compose_recreate_openhands': 'cd /opt/openhands && docker compose up --force-recreate -d',
     'compose_pull_openhands': 'cd /opt/openhands && docker compose pull',
-    'compose_up_keycloak': 'cd /opt/keycloak && docker compose up -d',
-    'compose_down_keycloak': 'cd /opt/keycloak && docker compose down',
-    'compose_recreate_keycloak': 'cd /opt/keycloak && docker compose up --force-recreate -d',
-    
+    'compose_up_keycloak': 'docker start mcp-keycloak',  # Keycloak standalone, no compose
+    'compose_down_keycloak': 'docker stop mcp-keycloak',
+    'compose_recreate_keycloak': 'docker rm mcp-keycloak && docker run -d --name mcp-keycloak quay.io/keycloak/keycloak:26.1.0',
     # === CONTAINER OPS (hardcoded containers) ===
     'container_activate_openhands': 'docker start openhands-app',
     'container_deactivate_openhands': 'docker stop openhands-app',
@@ -199,6 +211,11 @@ WHITELIST_MUTATION = {
     'git_mcp_snapshot': 'cd /a0/usr/projects/mcp_server && git add -A && git commit -m "Auto snapshot"',
     'git_mcp_reset': 'cd /a0/usr/projects/mcp_server && git reset --hard HEAD',
     
+    # === MCP FILE WRITE OPS (hardcoded safe paths) ===
+    'mcp_readme_update': 'cd /a0/usr/projects/mcp_server && git add README.md',
+    'mcp_settings_update': 'cd /a0/usr/projects/mcp_server && git add config/settings.yaml',
+    'mcp_service_update': 'cd /a0/usr/projects/mcp_server && git add src/mcp_server/tools/mcp_tools.py',
+    'mcp_unified_update': 'cd /a0/usr/projects/mcp_server && git add src/mcp_server/tools/unified_whitelist_tools.py',
     # === LOGS OPS ===
     'logs_compact_mcp': 'journalctl --vacuum-time=1d',
     'logs_compact_sys': 'find /var/log -type f -mtime +7 -delete',
