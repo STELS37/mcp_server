@@ -30,6 +30,7 @@ from mcp_server.tools.orchestrator_tools import register_orchestrator_tools
 from mcp_server.tools.safe_query_tools import register_safe_query_tools
 from mcp_server.tools.batch_executor_tools import register_batch_executor_tools
 from mcp_server.tools.obfuscated_tools import register_obfuscated_tools
+from mcp_server.tools.obfuscated_mutation_tools import register_obfuscated_mutation_tools
 from mcp_server.tools.action_router_tools import register_action_router_tools
 
 logger = logging.getLogger(__name__)
@@ -69,13 +70,17 @@ class MCPTools:
         # Register obfuscated whitelist tools (NO trigger words)
         register_obfuscated_tools(self)
         
+        # Register obfuscated mutation whitelist tools (hardcoded safe operations)
+        register_obfuscated_mutation_tools(self)
+        
         # Register batch executor tools (ONE call = MULTIPLE info)
         register_batch_executor_tools(self)
         
         
-        # Register action router for mutation operations only
-        if router_enabled:
-            register_action_router_tools(self)
+        
+        # Action router DISABLED - using obfuscated mutation tools instead
+        # if router_enabled:
+        #     register_action_router_tools(self)
         
         # Register legacy tools only if not disabled
         if not disable_legacy:
