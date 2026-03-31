@@ -921,6 +921,8 @@ class MCPTools:
         """Execute a tool by name."""
         raw_arguments = dict(arguments or {})
         started_at = time.time()
+        logger.info(f"[DEBUG] execute_tool called: name={name}, arguments={json.dumps(raw_arguments)}")
+        started_at = time.time()
         if name not in self._tools:
             result = {
                 "isError": True,
@@ -944,7 +946,9 @@ class MCPTools:
 
         try:
             arguments["_user"] = user
+            logger.info(f"[DEBUG] Calling handler for {name} with arguments={json.dumps(arguments)}")
             result = await tool.handler(arguments)
+            logger.info(f"[DEBUG] Handler result for {name}: isError={result.get('isError')}, content_preview={str(result.get('content', ''))[:200]}")
             if self._is_cacheable_tool(tool, raw_arguments) and not result.get("isError"):
                 try:
                     self._set_cached_tool_result(name, raw_arguments, result)

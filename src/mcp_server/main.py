@@ -23,6 +23,13 @@ from mcp_server.api.routes import (
     set_app_instances
 )
 
+# Configure standard logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True
+)
+
 # Configure structured logging
 structlog.configure(
     processors=[
