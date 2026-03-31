@@ -2,7 +2,18 @@
 
 import subprocess
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+
+@dataclass
+class ExtraToolDefinition:
+    name: str
+    description: str
+    input_schema: Dict[str, Any]
+    handler: callable
+    dangerous: bool = False
+    annotations: Optional[Dict[str, Any]] = None
+
 
 # Whitelist репозиториев
 REPO_WHITELIST = [
@@ -46,205 +57,249 @@ def _check_repo(cwd: str) -> Dict[str, Any]:
     return {"valid": True}
 
 
-def register_github_tools(mcp_tools):
-    """Register GitHub whitelist tools."""
+def _ro(): return {"readOnlyHint": True}
+
+def _rw(): return {"readOnlyHint": False}
+
+
+# ============================================================================
+# HANDLERS FOR GITHUB TOOLS
+# ============================================================================
+
+async def _repo_status_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["status", "--short"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_status_mgo(args):
+    cwd = "/a0/usr/projects/mgo_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["status", "--short"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_status_telegram(args):
+    cwd = "/a0/usr/projects/telegram_to_max"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["status", "--short"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_log_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["log", "--oneline", "-10"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_log_mgo(args):
+    cwd = "/a0/usr/projects/mgo_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["log", "--oneline", "-10"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_log_telegram(args):
+    cwd = "/a0/usr/projects/telegram_to_max"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["log", "--oneline", "-10"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_diff_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["diff", "--stat"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_sync_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["pull"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_sync_mgo(args):
+    cwd = "/a0/usr/projects/mgo_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["pull"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_sync_telegram(args):
+    cwd = "/a0/usr/projects/telegram_to_max"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["pull"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_branch_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["branch", "-a"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_upload_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    result = _run_git(cwd, ["push"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+async def _repo_snapshot_mcp(args):
+    cwd = "/a0/usr/projects/mcp_server"
+    check = _check_repo(cwd)
+    if "error" in check:
+        return {"content": [{"type": "text", "text": check["error"]}], "isError": True}
+    # Add all changes and commit
+    _run_git(cwd, ["add", "-A"])
+    result = _run_git(cwd, ["commit", "-m", "Auto snapshot"])
+    return {"content": [{"type": "text", "text": result.get("stdout", str(result))}], "isError": not result.get("success", False)}
+
+
+# ============================================================================
+# REGISTER FUNCTION
+# ============================================================================
+
+def register_github_tools(toolset):
+    """Register GitHub whitelist tools using ExtraToolDefinition pattern."""
+    extra = [
+        # STATUS TOOLS
+        ExtraToolDefinition(
+            name="repo_status_mcp",
+            description="Show MCP server repository status",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_status_mcp,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        ExtraToolDefinition(
+            name="repo_status_mgo",
+            description="Show MGO server repository status",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_status_mgo,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        ExtraToolDefinition(
+            name="repo_status_telegram",
+            description="Show Telegram repository status",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_status_telegram,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        # LOG TOOLS
+        ExtraToolDefinition(
+            name="repo_log_mcp",
+            description="Show MCP server recent commits",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_log_mcp,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        ExtraToolDefinition(
+            name="repo_log_mgo",
+            description="Show MGO server recent commits",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_log_mgo,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        ExtraToolDefinition(
+            name="repo_log_telegram",
+            description="Show Telegram repository recent commits",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_log_telegram,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        # DIFF TOOLS
+        ExtraToolDefinition(
+            name="repo_diff_mcp",
+            description="Show MCP server uncommitted changes",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_diff_mcp,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        # SYNC TOOLS
+        ExtraToolDefinition(
+            name="repo_sync_mcp",
+            description="Pull latest changes for MCP server",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_sync_mcp,
+            dangerous=False,
+            annotations=_rw()
+        ),
+        ExtraToolDefinition(
+            name="repo_sync_mgo",
+            description="Pull latest changes for MGO server",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_sync_mgo,
+            dangerous=False,
+            annotations=_rw()
+        ),
+        ExtraToolDefinition(
+            name="repo_sync_telegram",
+            description="Pull latest changes for Telegram repo",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_sync_telegram,
+            dangerous=False,
+            annotations=_rw()
+        ),
+        # BRANCH TOOLS
+        ExtraToolDefinition(
+            name="repo_branch_mcp",
+            description="List all branches in MCP server repo",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_branch_mcp,
+            dangerous=False,
+            annotations=_ro()
+        ),
+        # UPLOAD TOOLS
+        ExtraToolDefinition(
+            name="repo_upload_mcp",
+            description="Push MCP server changes to remote",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_upload_mcp,
+            dangerous=False,
+            annotations=_rw()
+        ),
+        # SNAPSHOT TOOLS
+        ExtraToolDefinition(
+            name="repo_snapshot_mcp",
+            description="Create auto commit for MCP server",
+            input_schema={"type": "object", "properties": {}},
+            handler=_repo_snapshot_mcp,
+            dangerous=False,
+            annotations=_rw()
+        ),
+    ]
     
-    # STATUS TOOLS
-    
-    @mcp_tools._tool(name="repo_status_mcp", description="Show MCP server repository status")
-    def repo_status_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["status", "--short"])
-    
-    @mcp_tools._tool(name="repo_status_mgo", description="Show MGO server repository status")
-    def repo_status_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["status", "--short"])
-    
-    @mcp_tools._tool(name="repo_status_telegram", description="Show Telegram repository status")
-    def repo_status_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["status", "--short"])
-    
-    # LOG TOOLS
-    
-    @mcp_tools._tool(name="repo_log_mcp", description="Show MCP server recent commits")
-    def repo_log_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["log", "--oneline", "-10"])
-    
-    @mcp_tools._tool(name="repo_log_mgo", description="Show MGO server recent commits")
-    def repo_log_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["log", "--oneline", "-10"])
-    
-    @mcp_tools._tool(name="repo_log_telegram", description="Show Telegram repository recent commits")
-    def repo_log_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["log", "--oneline", "-10"])
-    
-    # BRANCH TOOLS
-    
-    @mcp_tools._tool(name="repo_branch_mcp", description="Show MCP server branches")
-    def repo_branch_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["branch", "-a"])
-    
-    @mcp_tools._tool(name="repo_branch_mgo", description="Show MGO server branches")
-    def repo_branch_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["branch", "-a"])
-    
-    @mcp_tools._tool(name="repo_branch_telegram", description="Show Telegram repository branches")
-    def repo_branch_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["branch", "-a"])
-    
-    # SYNC TOOLS
-    
-    @mcp_tools._tool(name="repo_sync_mcp", description="Sync MCP server repository with remote")
-    def repo_sync_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        fetch = _run_git(cwd, ["fetch"])
-        if not fetch.get("success"):
-            return fetch
-        return _run_git(cwd, ["pull"])
-    
-    @mcp_tools._tool(name="repo_sync_mgo", description="Sync MGO server repository with remote")
-    def repo_sync_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        fetch = _run_git(cwd, ["fetch"])
-        if not fetch.get("success"):
-            return fetch
-        return _run_git(cwd, ["pull"])
-    
-    @mcp_tools._tool(name="repo_sync_telegram", description="Sync Telegram repository with remote")
-    def repo_sync_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        fetch = _run_git(cwd, ["fetch"])
-        if not fetch.get("success"):
-            return fetch
-        return _run_git(cwd, ["pull"])
-    
-    # SNAPSHOT TOOLS
-    
-    @mcp_tools._tool(name="repo_snapshot_mcp", description="Create snapshot of MCP server changes")
-    def repo_snapshot_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        add = _run_git(cwd, ["add", "-A"])
-        if not add.get("success"):
-            return add
-        return _run_git(cwd, ["commit", "-m", "Auto-snapshot"])
-    
-    @mcp_tools._tool(name="repo_snapshot_mgo", description="Create snapshot of MGO server changes")
-    def repo_snapshot_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        add = _run_git(cwd, ["add", "-A"])
-        if not add.get("success"):
-            return add
-        return _run_git(cwd, ["commit", "-m", "Auto-snapshot"])
-    
-    @mcp_tools._tool(name="repo_snapshot_telegram", description="Create snapshot of Telegram repository changes")
-    def repo_snapshot_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        add = _run_git(cwd, ["add", "-A"])
-        if not add.get("success"):
-            return add
-        return _run_git(cwd, ["commit", "-m", "Auto-snapshot"])
-    
-    # UPLOAD TOOLS
-    
-    @mcp_tools._tool(name="repo_upload_mcp", description="Upload MCP server changes to remote")
-    def repo_upload_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["push"])
-    
-    @mcp_tools._tool(name="repo_upload_mgo", description="Upload MGO server changes to remote")
-    def repo_upload_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["push"])
-    
-    @mcp_tools._tool(name="repo_upload_telegram", description="Upload Telegram repository changes to remote")
-    def repo_upload_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["push"])
-    
-    # REVERT TOOLS
-    
-    @mcp_tools._tool(name="repo_revert_mcp", description="Revert MCP server to last commit")
-    def repo_revert_mcp() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mcp_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["reset", "--hard", "HEAD"])
-    
-    @mcp_tools._tool(name="repo_revert_mgo", description="Revert MGO server to last commit")
-    def repo_revert_mgo() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/mgo_server"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["reset", "--hard", "HEAD"])
-    
-    @mcp_tools._tool(name="repo_revert_telegram", description="Revert Telegram repository to last commit")
-    def repo_revert_telegram() -> Dict[str, Any]:
-        cwd = "/a0/usr/projects/telegram_to_max"
-        check = _check_repo(cwd)
-        if "error" in check:
-            return check
-        return _run_git(cwd, ["reset", "--hard", "HEAD"])
+    # Register to toolset.extra_tools
+    for tool in extra:
+        toolset.extra_tools[tool.name] = {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+            "handler": tool.handler,
+            "dangerous": tool.dangerous,
+            "annotations": tool.annotations,
+        }

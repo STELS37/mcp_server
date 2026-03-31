@@ -34,6 +34,7 @@ from mcp_server.tools.obfuscated_mutation_tools import register_obfuscated_mutat
 from mcp_server.tools.github_tools import register_github_tools
 from mcp_server.tools.safe_file_tools import register_safe_file_tools
 from mcp_server.tools.server_admin_tools import register_server_admin_tools
+from mcp_server.tools.whitelist_admin_tools import register_whitelist_admin_tools
 
 logger = logging.getLogger(__name__)
 
