@@ -55,10 +55,38 @@ class MCPTools:
         self._read_cache: Dict[str, Dict[str, Any]] = {}
         self._read_cache_hits = 0
         self._read_cache_misses = 0
+        
+        # Router mode configuration
+        router_settings = getattr(self.settings, 'router', None)
+        router_enabled = router_settings and router_settings.enabled
+        disable_legacy = router_settings and router_settings.disable_legacy_tools
+        
         # Register action router FIRST (fills extra_tools)
-        register_action_router_tools(self)
-        # Now register all tools (includes back-compat merge of extra_tools)
-        self._register_all_tools()
+        if router_enabled:
+            register_action_router_tools(self)
+        
+        # Register legacy tools only if not disabled
+        if not disable_legacy:
+            self._register_all_tools()
+        else:
+            # Still need to merge extra_tools from router
+            self._merge_extra_tools()
+    
+    def _merge_extra_tools(self):
+        """Merge extra_tools into _tools registry (for router mode)."""
+        if getattr(self, "extra_tools", None):
+            for _name, _meta in list(self.extra_tools.items()):
+                _handler = _meta.get("handler")
+                if not callable(_handler):
+                    continue
+                self._tools[_name] = ToolDefinition(
+                    name=_name,
+                    description=_meta.get("description", ""),
+                    input_schema=_meta.get("input_schema", {"type": "object", "properties": {}, "required": []}),
+                    handler=_handler,
+                    dangerous=bool(_meta.get("dangerous", False)),
+                    annotations=_meta.get("annotations"),
+                )
     
     
     def _register_all_tools(self):

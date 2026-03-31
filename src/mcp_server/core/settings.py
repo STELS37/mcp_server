@@ -42,6 +42,24 @@ class MCPSettings(BaseSettings):
     protocol_version: str = "2024-11-05"
     capabilities: MCPCapabilitiesSettings = Field(default_factory=MCPCapabilitiesSettings)
 
+class RouterSettings(BaseSettings):
+    """Router mode configuration - control legacy vs new tool system."""
+    model_config = SettingsConfigDict(env_prefix="MCP_ROUTER__", extra="ignore")
+    
+    # Enable universal action router (execute_server_action)
+    enabled: bool = True
+    # Disable legacy individual tools when True
+    disable_legacy_tools: bool = True
+    # Router phase: "read_only" | "controlled_mutation" | "full"
+    phase: str = "full"
+    # Preview mode enabled
+    preview_enabled: bool = True
+    # Allow shell/bash commands through router
+    allow_shell_actions: bool = True
+    # Allow mutation actions (restart, write, etc.)
+    allow_mutation_actions: bool = True
+
+
 
 class SSHSettings(BaseSettings):
     """SSH connection configuration."""
@@ -203,6 +221,7 @@ class Settings(BaseSettings):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     health: HealthSettings = Field(default_factory=HealthSettings)
+    router: RouterSettings = Field(default_factory=RouterSettings)
     
     # Redis for rate limiting (optional)
     redis_url: Optional[str] = Field(
