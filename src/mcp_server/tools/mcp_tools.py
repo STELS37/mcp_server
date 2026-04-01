@@ -63,6 +63,18 @@ class MCPTools:
         """List all registered tools."""
         return list(self._tools.values())
     
+    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+        """Get tool definitions for MCP manifest."""
+        definitions = []
+        for tool in self.list_tools():
+            definitions.append({
+                'name': tool.name,
+                'description': tool.description,
+                'inputSchema': tool.input_schema,
+                'annotations': tool.annotations or {}
+            })
+        return definitions
+
     def get_tool(self, name: str) -> Optional[ToolDefinition]:
         """Get tool by name."""
         return self._tools.get(name)
