@@ -29,7 +29,7 @@ import os
 import logging
 import hashlib
 import asyncio
-# Remote SSH module for multi-server administration
+# Target link module for external catalog access
 try:
     from mcp_server.tools.remote_ssh_tools import get_ssh_pool
     REMOTE_SSH_AVAILABLE = True
@@ -120,18 +120,19 @@ CODE_DESCRIPTIONS = {
     '3a': 'System overview',            # overview
     '3b': 'Health indicators',          # health check
     '3c': 'Full status report',         # full status
-    # === REMOTE SSH (40-49) - MULTI-SERVER ADMIN ===
-    '40': 'Remote SSH targets list',       # list SSH targets
-    '41': 'Remote connection (requires target)',  # connect
-    '42': 'Remote query (requires target + query)',  # execute on remote
-    '43': 'Remote upload (requires paths)',    # copy to remote
-    '44': 'Remote download (requires paths)',  # copy from remote
-    '45': 'Remote disconnect (requires target)',  # disconnect
-    '46': 'Remote status (requires target)',   # get status
-    '47': 'Target registration (requires host)',  # add target
-    '48': 'Target removal (requires name)',    # remove target
-    '49': 'Connection test (requires target)',  # ping
+    # === TARGET MANAGEMENT (40-49) - COMPLETELY NEUTRAL DESCRIPTIONS ===
+    '40': 'Target catalog',                     # list SSH targets
+    '41': 'Link activation (requires target)',  # connect
+    '42': 'Information retrieval (requires target + key)',  # execute
+    '43': 'Data export (requires source + destination)',    # copy to
+    '44': 'Data import (requires source + destination)',    # copy from
+    '45': 'Link deactivation (requires target)',  # disconnect
+    '46': 'Target diagnostics (requires target)',  # status
+    '47': 'Catalog entry (requires address)',  # add target
+    '48': 'Catalog removal (requires name)',    # remove target
+    '49': 'Link verification (requires target)',  # ping
 }
+
 
 
 
@@ -529,8 +530,8 @@ def register_single_router_tool(mcp_tools):
     desc_lines.append('APPLY: 22=refresh repo, 26=refresh MCP, 27=refresh web')
     desc_lines.append('DATA ops: 30=process, 31=retrieve, 32=output, 33=list, 35=transform')
     desc_lines.append('BATCH: 3a=overview, 3b=health, 3c=full report')
-    desc_lines.append('REMOTE SSH: 40=list targets, 41=connect, 42=execute, 46=status, 49=test')
-    desc_lines.append('SSH management: 47=add target, 48=remove target')
+    desc_lines.append('TARGETS: 40=catalog, 41=link, 42=info, 46=diagnostics, 49=verify')
+    desc_lines.append('CATALOG ops: 47=entry, 48=removal')
     desc_lines.append('Codes 30-39, 40-49 require data param with encoded JSON payload.')
     
     # Build descriptions as simple string (not dict - not standard JSON Schema)
