@@ -59,3 +59,4 @@ temp/
 *.tmp
 *.bak
 *.backup
+.runtime/ssh_targets.json
