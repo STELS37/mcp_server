@@ -456,14 +456,23 @@ async def handle_system_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
     
     if action_code in SSH_CODES:
         # Remote SSH handlers - call directly
+        # Cannot use asyncio.run() in running event loop!
+        # Solution: run async coroutine in separate thread with new loop
+        import concurrent.futures
         try:
             result = handler_factory(payload_b64)
             # Handle async handlers
             if hasattr(result, '__await__'):  # coroutine object
-                result = asyncio.run(result)
+                # Run in separate thread to avoid "asyncio.run() in running loop" error
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, result)
+                    result = future.result(timeout=60)
             # Result should be JSON string
             output = result if isinstance(result, str) else json.dumps(result, indent=2)
             is_error = 'error:' in output.lower()
+        except concurrent.futures.TimeoutError:
+            output = 'error: SSH operation timeout (60s)'
+            is_error = True
         except Exception as e:
             output = f'error: {e}'
             is_error = True
