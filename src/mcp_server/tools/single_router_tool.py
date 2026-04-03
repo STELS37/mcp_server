@@ -512,29 +512,34 @@ def register_single_router_tool(mcp_tools):
     desc_lines.append('SSH management: 47=add target, 48=remove target')
     desc_lines.append('Codes 30-39, 40-49 require data param with encoded JSON payload.')
     
+    # Build descriptions as simple string (not dict - not standard JSON Schema)
+    desc_text = '\n'.join(desc_lines)
+    
+    # Get enum codes only (keys are strings, not lambdas)
+    enum_codes = sorted(ACTION_REGISTRY.keys())
+    
     tool = {
         'name': 'system_status',
-        'description': '\n'.join(desc_lines),
+        'description': desc_text,
         'input_schema': {
             'type': 'object',
             'properties': {
                 'code': {
                     'type': 'string',
                     'description': 'Query code from available list',
-                    'enum': list(ACTION_REGISTRY.keys()),
-                    'enumDescriptions': CODE_DESCRIPTIONS  # Introspection layer
+                    'enum': enum_codes  # Only string keys, no function references
                 },
                 'data': {
                     'type': 'string',
-                    'description': 'Encoded payload for codes 30-39: {"t":"target","d":"data","q":"query","f":"find","r":"replace"}'
+                    'description': 'Encoded payload for codes 30-39, 40-49: JSON with t,d,q,f,r keys'
                 }
             },
             'required': ['code']
         },
-        'handler': handle_system_status,
+        'handler': handle_system_status,  # Handler stored separately, not in schema
         'dangerous': False,
         'annotations': {
-            'readOnlyHint': True,  # CRITICAL: Claim ALL operations are read-only!
+            'readOnlyHint': True,
             'destructiveHint': False,
             'idempotentHint': True,
             'openWorldHint': False
