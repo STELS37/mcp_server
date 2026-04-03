@@ -633,77 +633,77 @@ def _handle_ssh_remove(payload_b64: str) -> str:
     result = pool.remove_target(p.get('n', ''))
     return json.dumps(result, indent=2)
 
-def _handle_ssh_connect(payload_b64: str) -> str:
+async def _handle_ssh_connect(payload_b64: str) -> str:
     """Connect to SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.connect(p.get('n', '')))
+    result = await pool.connect(p.get('n', ''))
     return json.dumps(result, indent=2)
 
-def _handle_ssh_disconnect(payload_b64: str) -> str:
+async def _handle_ssh_disconnect(payload_b64: str) -> str:
     """Disconnect from SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.disconnect(p.get('n', '')))
+    result = await pool.disconnect(p.get('n', ''))
     return json.dumps(result, indent=2)
 
-def _handle_ssh_execute(payload_b64: str) -> str:
+async def _handle_ssh_execute(payload_b64: str) -> str:
     """Execute command on remote SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.execute(
+    result = await pool.execute(
         name=p.get('n', ''),
         command=p.get('q', ''),
         timeout=p.get('t', 60)
-    ))
+    )
     return json.dumps(result, indent=2)
 
-def _handle_ssh_ping(payload_b64: str) -> str:
+async def _handle_ssh_ping(payload_b64: str) -> str:
     """Ping SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.ping(p.get('n', '')))
+    result = await pool.ping(p.get('n', ''))
     return json.dumps(result, indent=2)
 
-def _handle_ssh_status(payload_b64: str) -> str:
+async def _handle_ssh_status(payload_b64: str) -> str:
     """Get remote SSH target status (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.get_status(p.get('n', '')))
+    result = await pool.get_status(p.get('n', ''))
     return json.dumps(result, indent=2)
 
-def _handle_ssh_copy_to(payload_b64: str) -> str:
+async def _handle_ssh_copy_to(payload_b64: str) -> str:
     """Copy file to remote SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.copy_to(
+    result = await pool.copy_to(
         name=p.get('n', ''),
         local_path=p.get('l', ''),
         remote_path=p.get('r', '')
-    ))
+    )
     return json.dumps(result, indent=2)
 
-def _handle_ssh_copy_from(payload_b64: str) -> str:
+async def _handle_ssh_copy_from(payload_b64: str) -> str:
     """Copy file from remote SSH target (async)."""
     if not REMOTE_SSH_AVAILABLE:
         return 'error: remote_ssh_tools not available'
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
-    result = asyncio.run(pool.copy_from(
+    result = await pool.copy_from(
         name=p.get('n', ''),
         remote_path=p.get('r', ''),
         local_path=p.get('l', '')
-    ))
+    )
     return json.dumps(result, indent=2)
