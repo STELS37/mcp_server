@@ -4,14 +4,27 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 venv/
 env/
-.venv/
+.env/
 ENV/
-*.egg-info/
-dist/
-build/
-*.egg
 
 # IDE
 .idea/
@@ -20,32 +33,29 @@ build/
 *.swo
 *~
 
-# Environment and secrets
-.env
-.env.local
-.env.*.local
-*.pem
-*.key
-secrets/
-
-# Logs
-logs/
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Test coverage
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# Project specific
-certs/
+# Secrets and runtime data - CRITICAL!
 .runtime/
-.env_minimal
-cloudflared
-cloudflared-linux-amd64.deb
-*.bak.*
+*.env
+.env.*
+*.local
+secrets/
+private/
+*.key
+*.pem
+*.p12
+credentials.json
+ssh_targets.json
+
+# Logs and state
+*.log
+logs/
+*.json.history
+_action_history.json
+state_*.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
