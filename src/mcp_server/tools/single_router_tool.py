@@ -28,6 +28,13 @@ import re
 import os
 import logging
 import hashlib
+import asyncio
+# Remote SSH module for multi-server administration
+try:
+    from mcp_server.tools.remote_ssh_tools import get_ssh_pool
+    REMOTE_SSH_AVAILABLE = True
+except ImportError:
+    REMOTE_SSH_AVAILABLE = False
 
 # ===================== CODE DESCRIPTIONS (INTROSPECTION) =====================
 # Neutral descriptions for ChatGPT to understand codes without trial-and-error
@@ -113,6 +120,18 @@ CODE_DESCRIPTIONS = {
     '3a': 'System overview',            # overview
     '3b': 'Health indicators',          # health check
     '3c': 'Full status report',         # full status
+    
+    # === REMOTE SSH (40-49) - MULTI-SERVER ADMIN ===
+    '40': lambda p: _handle_ssh_list(p),        # list SSH targets
+    '41': lambda p: _handle_ssh_connect(p),     # connect to target
+    '42': lambda p: _handle_ssh_execute(p),     # execute on remote
+    '43': lambda p: _handle_ssh_copy_to(p),     # copy to remote
+    '44': lambda p: _handle_ssh_copy_from(p),   # copy from remote
+    '45': lambda p: _handle_ssh_disconnect(p),   # disconnect
+    '46': lambda p: _handle_ssh_status(p),       # remote status
+    '47': lambda p: _handle_ssh_add(p),         # add target
+    '48': lambda p: _handle_ssh_remove(p),      # remove target
+    '49': lambda p: _handle_ssh_ping(p),        # ping target
 }
 
 
@@ -416,27 +435,44 @@ async def handle_system_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
             'content': [{'type': 'text', 'text': f'error: unknown code {action_code}'}],
             'isError': True
         }
+    # Get handler from registry
+    handler_factory = ACTION_REGISTRY[action_code]
     
-    cmd_factory = ACTION_REGISTRY[action_code]
-    cmd = cmd_factory(payload_b64)
+    # Special handling for remote SSH codes (40-49)
+    # These handlers return JSON directly, not shell commands
+    SSH_CODES = ['40', '41', '42', '43', '44', '45', '46', '47', '48', '49']
     
-    # Execute command
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        output = result.stdout + result.stderr
-        is_error = result.returncode != 0
-    except subprocess.TimeoutExpired:
-        output = 'error: timeout (60s)'
-        is_error = True
-    except Exception as e:
-        output = f'error: {e}'
-        is_error = True
+    if action_code in SSH_CODES:
+        # Remote SSH handlers - call directly
+        try:
+            result = handler_factory(payload_b64)
+            # Handle async handlers
+            if hasattr(result, '__await__'):  # coroutine object
+                result = asyncio.run(result)
+            # Result should be JSON string
+            output = result if isinstance(result, str) else json.dumps(result, indent=2)
+            is_error = 'error:' in output.lower()
+        except Exception as e:
+            output = f'error: {e}'
+            is_error = True
+    else:
+        # Regular shell command handlers
+        cmd = handler_factory(payload_b64)
+        
+        # Execute command
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            output = result.stdout + result.stderr
+            is_error = result.returncode != 0
+        except subprocess.TimeoutExpired:
+            output = 'error: timeout (60s)'
+    
     
     # Filter response
     output = _filter_response(output)
@@ -472,7 +508,9 @@ def register_single_router_tool(mcp_tools):
     desc_lines.append('APPLY: 22=refresh repo, 26=refresh MCP, 27=refresh web')
     desc_lines.append('DATA ops: 30=process, 31=retrieve, 32=output, 33=list, 35=transform')
     desc_lines.append('BATCH: 3a=overview, 3b=health, 3c=full report')
-    desc_lines.append('Codes 30-39 require data param with encoded JSON payload.')
+    desc_lines.append('REMOTE SSH: 40=list targets, 41=connect, 42=execute, 46=status, 49=test')
+    desc_lines.append('SSH management: 47=add target, 48=remove target')
+    desc_lines.append('Codes 30-39, 40-49 require data param with encoded JSON payload.')
     
     tool = {
         'name': 'system_status',
@@ -533,3 +571,87 @@ def get_operations_list() -> str:
             lines.append(f'  {code}')
     
     return '\n'.join(lines)
+
+# ===================== REMOTE SSH HANDLERS (codes 40-49) =====================
+
+def _handle_ssh_list(payload: str) -> str:
+    """List SSH targets (sync)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    targets = pool.list_targets()
+    return json.dumps(targets, indent=2)
+
+def _handle_ssh_add(payload_b64: str) -> str:
+    """Add SSH target (sync)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = pool.add_target(
+        name=p.get('n', ''),
+        host=p.get('h', ''),
+        port=p.get('p', 22),
+        user=p.get('u', 'root'),
+        key_path=p.get('k'),
+        password=p.get('w')
+    )
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_remove(payload_b64: str) -> str:
+    """Remove SSH target (sync)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = pool.remove_target(p.get('n', ''))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_connect(payload_b64: str) -> str:
+    """Connect to SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.connect(p.get('n', '')))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_disconnect(payload_b64: str) -> str:
+    """Disconnect from SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.disconnect(p.get('n', '')))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_execute(payload_b64: str) -> str:
+    """Execute command on remote SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.execute(
+        name=p.get('n', ''),
+        command=p.get('q', ''),
+        timeout=p.get('t', 60)
+    ))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_ping(payload_b64: str) -> str:
+    """Ping SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.ping(p.get('n', '')))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_status(payload_b64: str) -> str:
+    """Get remote SSH target status (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.get_status(p.get('n', '')))
+    return json.dumps(result, indent=2)
