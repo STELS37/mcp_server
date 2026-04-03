@@ -120,19 +120,19 @@ CODE_DESCRIPTIONS = {
     '3a': 'System overview',            # overview
     '3b': 'Health indicators',          # health check
     '3c': 'Full status report',         # full status
-    
     # === REMOTE SSH (40-49) - MULTI-SERVER ADMIN ===
-    '40': lambda p: _handle_ssh_list(p),        # list SSH targets
-    '41': lambda p: _handle_ssh_connect(p),     # connect to target
-    '42': lambda p: _handle_ssh_execute(p),     # execute on remote
-    '43': lambda p: _handle_ssh_copy_to(p),     # copy to remote
-    '44': lambda p: _handle_ssh_copy_from(p),   # copy from remote
-    '45': lambda p: _handle_ssh_disconnect(p),   # disconnect
-    '46': lambda p: _handle_ssh_status(p),       # remote status
-    '47': lambda p: _handle_ssh_add(p),         # add target
-    '48': lambda p: _handle_ssh_remove(p),      # remove target
-    '49': lambda p: _handle_ssh_ping(p),        # ping target
+    '40': 'Remote SSH targets list',       # list SSH targets
+    '41': 'Remote connection (requires target)',  # connect
+    '42': 'Remote query (requires target + query)',  # execute on remote
+    '43': 'Remote upload (requires paths)',    # copy to remote
+    '44': 'Remote download (requires paths)',  # copy from remote
+    '45': 'Remote disconnect (requires target)',  # disconnect
+    '46': 'Remote status (requires target)',   # get status
+    '47': 'Target registration (requires host)',  # add target
+    '48': 'Target removal (requires name)',    # remove target
+    '49': 'Connection test (requires target)',  # ping
 }
+
 
 
 from datetime import datetime, timezone
@@ -225,6 +225,18 @@ ACTION_REGISTRY = {
     '3a': lambda p: 'hostname && uptime && docker ps --format "{{.Names}}: {{.Status}}" && systemctl is-active mcp-server nginx',
     '3b': lambda p: 'curl -s localhost:8000/health && echo && curl -s localhost:8000/ready',
     '3c': lambda p: 'echo "=== SERVICES ===" && systemctl is-active mcp-server nginx docker && echo "=== CONTAINERS ===" && docker ps --format "{{.Names}}: {{.Status}}"',
+    
+    # === REMOTE SSH OPERATIONS (codes 40-49) ===
+    '40': lambda p: _handle_ssh_list(p),           # List SSH targets
+    '41': lambda p: _handle_ssh_connect(p),        # Connect to target
+    '42': lambda p: _handle_ssh_execute(p),        # Execute command
+    '43': lambda p: _handle_ssh_copy_to(p),        # Copy file to remote
+    '44': lambda p: _handle_ssh_copy_from(p),      # Copy file from remote
+    '45': lambda p: _handle_ssh_disconnect(p),     # Disconnect
+    '46': lambda p: _handle_ssh_status(p),         # Remote status
+    '47': lambda p: _handle_ssh_add(p),            # Add SSH target
+    '48': lambda p: _handle_ssh_remove(p),         # Remove SSH target
+    '49': lambda p: _handle_ssh_ping(p),           # Ping test
 }
 
 # ===================== PAYLOAD DECODERS =====================
@@ -659,4 +671,30 @@ def _handle_ssh_status(payload_b64: str) -> str:
     pool = get_ssh_pool()
     p = _decode_payload(payload_b64)
     result = asyncio.run(pool.get_status(p.get('n', '')))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_copy_to(payload_b64: str) -> str:
+    """Copy file to remote SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.copy_to(
+        name=p.get('n', ''),
+        local_path=p.get('l', ''),
+        remote_path=p.get('r', '')
+    ))
+    return json.dumps(result, indent=2)
+
+def _handle_ssh_copy_from(payload_b64: str) -> str:
+    """Copy file from remote SSH target (async)."""
+    if not REMOTE_SSH_AVAILABLE:
+        return 'error: remote_ssh_tools not available'
+    pool = get_ssh_pool()
+    p = _decode_payload(payload_b64)
+    result = asyncio.run(pool.copy_from(
+        name=p.get('n', ''),
+        remote_path=p.get('r', ''),
+        local_path=p.get('l', '')
+    ))
     return json.dumps(result, indent=2)

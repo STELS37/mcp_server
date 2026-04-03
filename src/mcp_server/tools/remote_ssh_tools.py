@@ -135,6 +135,38 @@ class RemoteSSHPool:
             results[k] = r.get("stdout", "error") if "success" in r else "error"
         return {"success": True, "target": name, "host": self._targets[name].host, "status": results}
 
+    async def copy_to(self, name, local_path, remote_path) -> Dict[str, Any]:
+        """Copy file from local to remote via SFTP."""
+        if name not in self._targets:
+            return {"error": f"Target not found: {name}"}
+        if name not in self._connections:
+            r = await self.connect(name)
+            if "error" in r: return r
+        async with self._locks.get(name, asyncio.Lock()):
+            try:
+                await asyncssh.sftp_copy(local_path, f"{name}:{remote_path}",
+                    connection=self._connections[name])
+                self._targets[name].last_activity = time.time()
+                return {"success": True, "target": name, "local": local_path, "remote": remote_path}
+            except Exception as e:
+                return {"error": str(e)}
+
+    async def copy_from(self, name, remote_path, local_path) -> Dict[str, Any]:
+        """Copy file from remote to local via SFTP."""
+        if name not in self._targets:
+            return {"error": f"Target not found: {name}"}
+        if name not in self._connections:
+            r = await self.connect(name)
+            if "error" in r: return r
+        async with self._locks.get(name, asyncio.Lock()):
+            try:
+                await asyncssh.sftp_copy(f"{name}:{remote_path}", local_path,
+                    connection=self._connections[name])
+                self._targets[name].last_activity = time.time()
+                return {"success": True, "target": name, "remote": remote_path, "local": local_path}
+            except Exception as e:
+                return {"error": str(e)}
+
 _ssh_pool = None
 
 def get_ssh_pool():
