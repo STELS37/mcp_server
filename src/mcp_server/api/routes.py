@@ -1,9 +1,8 @@
-"""API Routes for MCP Server."""
+import asyncio
 import json
 import logging
 import uuid
 from typing import Optional
-
 from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
@@ -81,10 +80,13 @@ async def readiness_check():
         if _ssh_client.is_connected:
             checks["ssh"] = "ready"
         else:
-            # Try to connect
+            # Try to connect with timeout
             try:
-                await _ssh_client.connect()
+                await asyncio.wait_for(_ssh_client.connect(), timeout=5)
                 checks["ssh"] = "ready"
+            except asyncio.TimeoutError as e:
+                checks["ssh"] = f"not_ready: timeout after 5s"
+                ready = False
             except Exception as e:
                 checks["ssh"] = f"not_ready: {str(e)}"
                 ready = False
