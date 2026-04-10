@@ -40,24 +40,24 @@ def register_playbook_tools(toolset) -> None:
             f"runtime_dir: {project_root}/.runtime\n"
             f"source_dir: {project_root}/src/mcp_server\n\n"
             "DEFAULT WORKFLOW\n"
-            "1. Start with health_check, ready_check, and mcp_self_test for fast reality checks.\n"
-            "2. For service trouble use diagnose_service or service_health_bundle before changing anything.\n"
-            "3. For code/config discovery use find_files, grep_file, read_file, stat_path, list_tree, and read_env_file.\n"
-            "4. Before changing important files create a backup when practical, then prefer narrow tools over generic shell.\n"
-            "5. After edits re-run health_check, ready_check, and any service-specific check.\n"
-            "6. Use run_command only when no narrow tool fits the task.\n"
-            "7. Keep changes minimal, verify immediately, and avoid unnecessary user questions.\n"
+            "1. Start with project_quick_facts and debug_service_workflow for fast reality checks.\n"
+            "2. For service trouble use debug_service_workflow before changing anything.\n"
+            "3. For heavy edits, long local work, or repeated file mutations delegate immediately with enqueue_agent_zero_task.\n"
+            "4. While Agent Zero works, continue analysis and monitor progress with get_agent_zero_queue_status.\n"
+            "5. For multi-step operational work prefer run_goal_workflow or run_intent_workflow before low-level commands.\n"
+            "6. For targeted local actions use the structured direct tools: local_exec, read_file, write_file, patch_file, list_dir, path_ops, and service_control.\n7. For background execution use enqueue_goal_task and monitor with get_orchestrator_status.\n"
+            "8. Use low-level system_status only as a fallback path when higher-level tools do not fit.\n"
         )
         return {"content": [{"type": "text", "text": text}], "isError": False}
 
     async def get_task_playbook(args: Dict[str, Any]) -> Dict[str, Any]:
         task_type = (args.get("task_type") or "general").strip().lower()
         playbooks = {
-            "debug": "DEBUG PLAYBOOK\n1. health_check\n2. ready_check\n3. diagnose_service(service, optional port)\n4. grep_file/tail_file on relevant logs\n5. only then edit or restart\n6. verify with mcp_self_test",
-            "edit": "EDIT PLAYBOOK\n1. locate target with find_files/grep_file\n2. inspect with read_file/stat_path\n3. back up important file if needed\n4. edit with write_file or replace_in_file\n5. reload/restart only if needed\n6. verify health/readiness",
-            "deploy": "DEPLOY PLAYBOOK\n1. inspect service_health_bundle\n2. inspect tree and env\n3. apply minimal file changes\n4. restart target service\n5. verify health, readiness, logs, and port",
+            "debug": "DEBUG PLAYBOOK\n1. project_quick_facts\n2. debug_service_workflow\n3. If the fix is multi-file or long-running, enqueue_agent_zero_task immediately\n4. For targeted local actions use local_exec, read_file, patch_file, and service_control\n5. verify with debug_service_workflow",
+            "edit": "EDIT PLAYBOOK\n1. inspect target and scope the change\n2. if the edit is large, multi-file, or likely to take time, enqueue_agent_zero_task immediately\n3. use safe_edit_workflow only for narrow targeted changes\n4. for direct local edits use read_file, write_file, patch_file, and local_exec\n5. reload/restart only if needed\n6. verify with debug_service_workflow",
+            "deploy": "DEPLOY PLAYBOOK\n1. prefer run_goal_workflow first\n2. if work is heavy, enqueue_agent_zero_task\n3. use enqueue_goal_task for background flows\n4. for targeted local actions use service_control and local_exec\n5. restart only when needed\n6. verify with debug_service_workflow",
             "ops": "OPS PLAYBOOK\n1. inspect systemd/docker/process state\n2. use narrow service/process/log tools\n3. change state only with clear intent\n4. verify immediately after every mutation",
-            "general": "GENERAL PLAYBOOK\n1. start_work_session\n2. inspect before changing\n3. prefer narrow tools\n4. verify after every mutation\n5. keep the user loop small and factual",
+            "general": "GENERAL PLAYBOOK\n1. start_work_session\n2. inspect before changing\n3. if work is heavy or long-running, enqueue_agent_zero_task\n4. while Agent Zero runs, monitor get_agent_zero_queue_status\n5. for targeted local work use the direct structured tools\n6. verify after every mutation\n7. keep the user loop small and factual",
         }
         text = playbooks.get(task_type, playbooks["general"])
         return {"content": [{"type": "text", "text": text}], "isError": False}

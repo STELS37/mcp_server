@@ -128,6 +128,14 @@ class MCPTools:
             logger.info("Agent Zero handoff tools registered")
         except ImportError as e:
             logger.warning(f"Agent Zero handoff tools not available: {e}")
+        
+        # Direct ops tools
+        try:
+            from mcp_server.tools.direct_ops_tools import register_direct_ops_tools
+            register_direct_ops_tools(self)
+            logger.info("Direct ops tools registered")
+        except ImportError as e:
+            logger.warning(f"Direct ops tools not available: {e}")
     
     def _convert_dict_to_tooldef(self) -> None:
         """Convert dict format tools to ToolDefinition objects."""

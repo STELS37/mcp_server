@@ -189,37 +189,71 @@ def register_router_tools(toolset) -> None:
                 first["text"] = text + str(first.get("text") or "")
         return result
 
+
+
     async def preview_goal_routing(args: Dict[str, Any]) -> Dict[str, Any]:
         session = _load_session()
         goal = args.get("goal") or ""
         inferred_intent, reason = _infer_intent_from_goal(goal)
+        if args.get("path") and (args.get("search") is not None or args.get("replace") is not None):
+            inferred_intent, reason = "fix", "Detected targeted file edit arguments."
         workflow_name, description = _route_intent(inferred_intent)
         workflow_args = _build_workflow_args(inferred_intent, args, session)
-        payload = _make_prefix(inferred_intent, workflow_name, description, workflow_args, session, {"goal": goal, "routing_reason": reason})
+        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 80 and not (args.get("path") and (args.get("search") is not None or args.get("replace") is not None))
+        if delegate:
+            agent_args = {
+                "goal": goal,
+                "project": args.get("project") or session.get("repo") or "mcp_server",
+                "project_root": args.get("project_root") or session.get("workspace") or "/a0/usr/projects/mcp_server",
+                "service": args.get("service") or session.get("service"),
+                "priority": args.get("priority") or "high",
+            }
+            payload = _make_prefix(inferred_intent, "enqueue_agent_zero_task", "Broad/heavy task delegated to Agent Zero first.", agent_args, session, {"goal": goal, "routing_reason": reason, "delegated_to_agent_zero": True})
+        else:
+            payload = _make_prefix(inferred_intent, workflow_name, description, workflow_args, session, {"goal": goal, "routing_reason": reason})
         return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}], "isError": False}
 
     async def run_goal_workflow(args: Dict[str, Any]) -> Dict[str, Any]:
         session = _load_session()
         goal = args.get("goal") or ""
         inferred_intent, reason = _infer_intent_from_goal(goal)
+        if args.get("path") and (args.get("search") is not None or args.get("replace") is not None):
+            inferred_intent, reason = "fix", "Detected targeted file edit arguments."
         workflow_name, description = _route_intent(inferred_intent)
         workflow_args = _build_workflow_args(inferred_intent, args, session)
+        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 80 and not (args.get("path") and (args.get("search") is not None or args.get("replace") is not None))
         user = args.get("_user", "unknown")
-        result = await toolset.execute_tool(workflow_name, workflow_args, user=user)
+        if delegate:
+            selected_workflow = "enqueue_agent_zero_task"
+            selected_description = "Broad/heavy task delegated to Agent Zero first."
+            selected_args = {
+                "goal": goal,
+                "project": args.get("project") or session.get("repo") or "mcp_server",
+                "project_root": args.get("project_root") or session.get("workspace") or "/a0/usr/projects/mcp_server",
+                "service": args.get("service") or session.get("service"),
+                "priority": args.get("priority") or "high",
+                "max_attempts": args.get("max_attempts") or 2,
+            }
+        else:
+            selected_workflow = workflow_name
+            selected_description = description
+            selected_args = workflow_args
+        result = await toolset.execute_tool(selected_workflow, selected_args, user=user)
         metadata = {
             "ran_at": _utc_now(),
             "goal": goal,
             "intent": inferred_intent,
-            "selected_workflow": workflow_name,
-            "description": description,
-            "workflow_args": workflow_args,
-            "routing_reason": reason,
+            "selected_workflow": selected_workflow,
+            "description": selected_description,
+            "workflow_args": selected_args,
+            "routing_reason": "Broad/heavy task delegated to Agent Zero first." if delegate else reason,
+            "delegated_to_agent_zero": delegate,
             "is_error": bool(result.get("isError")),
             "summary": _summarize_result(result),
         }
         _record_router_run(metadata)
         if result.get("content") and isinstance(result["content"], list) and result["content"]:
-            prefix = _make_prefix(inferred_intent, workflow_name, description, workflow_args, session, {"goal": goal, "routing_reason": reason, "result_summary": metadata["summary"], "ran_at": metadata["ran_at"]})
+            prefix = _make_prefix(inferred_intent, selected_workflow, selected_description, selected_args, session, {"goal": goal, "routing_reason": metadata["routing_reason"], "delegated_to_agent_zero": delegate, "result_summary": metadata["summary"], "ran_at": metadata["ran_at"]})
             text = json.dumps(prefix, indent=2, ensure_ascii=False) + "\n\n=== WORKFLOW RESULT ===\n\n"
             first = result["content"][0]
             if isinstance(first, dict) and first.get("type") == "text":

@@ -26,6 +26,7 @@ import base64
 import json
 import re
 import os
+import shlex
 import logging
 import hashlib
 import asyncio
@@ -274,18 +275,28 @@ def _decode_and_read(payload_b64: str) -> str:
     return f'cat {path} 2>/dev/null || echo "not found"'
 
 def _decode_and_write(payload_b64: str) -> str:
-    """Write file from encoded payload - safe shell escaping."""
+    """Write file from encoded payload with chunk/append/staged-file support."""
     p = _decode_payload(payload_b64)
     path = p.get('t', '')  # 't' = target
     data = p.get('d', '')  # 'd' = data
-    if not path or not data:
+    append_mode = bool(p.get('a', False))  # 'a' = append
+    staged_file = p.get('sf', '')  # 'sf' = staged file already uploaded in chunks
+    if not path or (not data and not staged_file):
         return 'error: missing target or data'
-    # Decode nested base64 if present
-    if data.startswith('b64:'): 
+    path_q = shlex.quote(path)
+    parent_q = shlex.quote(str(Path(path).expanduser().parent))
+    tmp_q = shlex.quote(f"{path}.mcp.tmp")
+    if staged_file:
+        staged_q = shlex.quote(staged_file)
+        if append_mode:
+            return f"mkdir -p {parent_q} && cat {staged_q} >> {path_q}"
+        return f"mkdir -p {parent_q} && cat {staged_q} > {tmp_q} && mv {tmp_q} {path_q}"
+    if isinstance(data, str) and data.startswith('b64:'):
         data = base64.b64decode(data[4:]).decode('utf-8')
-    # Encode data as base64 to avoid ALL shell escaping issues
-    data_b64 = base64.b64encode(data.encode()).decode()
-    return f"echo '{data_b64}' | base64 -d > '{path}'"
+    data_b64 = base64.b64encode(str(data).encode()).decode()
+    if append_mode:
+        return f"mkdir -p {parent_q} && echo '{data_b64}' | base64 -d >> {path_q}"
+    return f"mkdir -p {parent_q} && echo '{data_b64}' | base64 -d > {tmp_q} && mv {tmp_q} {path_q}"
 
 def _decode_and_list(payload_b64: str) -> str:
     """List directory from encoded payload."""
@@ -480,22 +491,28 @@ async def handle_system_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
     else:
         # Regular shell command handlers
         cmd = handler_factory(payload_b64)
-        
-        # Execute command
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            output = result.stdout + result.stderr
-            is_error = result.returncode != 0
-        except subprocess.TimeoutExpired:
-            output = 'error: timeout (60s)'
-    
-    
+
+        if isinstance(cmd, str) and cmd.startswith('error:'):
+            output = cmd
+            is_error = True
+        else:
+            # Execute command
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["bash", "-lc", cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                output = result.stdout + result.stderr
+                is_error = result.returncode != 0
+            except subprocess.TimeoutExpired:
+                output = 'error: timeout (60s)'
+                is_error = True
+            except Exception as e:
+                output = f'error: {e}'
+                is_error = True
     # Filter response
     output = _filter_response(output)
     
@@ -533,6 +550,9 @@ def register_single_router_tool(mcp_tools):
     desc_lines.append('TARGETS: 40=catalog, 41=link, 42=info, 46=diagnostics, 49=verify')
     desc_lines.append('CATALOG ops: 47=entry, 48=removal')
     desc_lines.append('Codes 30-39, 40-49 require data param with encoded JSON payload.')
+    desc_lines.append('Large content default: use code 32 with chunked append via a=1 into a staged file, then code 32 with sf=<staged_file> and target path for final commit.')
+    desc_lines.append('Large content default: use code 32 with chunked append via a=1 into a staged file, then code 32 with sf=<staged_file> and target path for final commit.')
+    desc_lines.append('Large content default: use code 32 with chunked append via a=1 into a staged file, then code 32 with sf=<staged_file> and target path for final commit.')
     
     # Build descriptions as simple string (not dict - not standard JSON Schema)
     desc_text = '\n'.join(desc_lines)
