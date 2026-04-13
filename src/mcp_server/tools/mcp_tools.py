@@ -1,13 +1,17 @@
-"""MCP Tools - Router architecture with extra tools support."""
+"""MCP Tools - Router architecture with execution isolation."""
+import asyncio
 import inspect
-import logging
 import json
+import logging
 from typing import Dict, Any, Callable, Optional, List
 from dataclasses import dataclass
 from pathlib import Path
 
-# Import single router tool
+# Import single router tool and extra modules
 from mcp_server.tools.single_router_tool import register_single_router_tool
+from mcp_server.tools.session_tools import register_session_tools
+from mcp_server.tools.bootstrap_tools import register_bootstrap_tools
+from mcp_server.tools.smart_tools import register_smart_tools
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +26,17 @@ class ToolDefinition:
     dangerous: bool = False
     annotations: Optional[Dict[str, Any]] = None
 
-
 class MCPTools:
     """MCP Tools - Router architecture with workflow support."""
     
     def __init__(self, ssh_client=None):
         self.ssh = ssh_client
         self._tools: Dict[str, ToolDefinition] = {}
-        self._action_history: List[Dict[str, Any]] = []
         self.extra_tools: Dict[str, Dict[str, Any]] = {}
+        self._action_history: List[Dict[str, Any]] = []
+        # Execution isolation configuration
+        self._executor_semaphore = asyncio.Semaphore(4)
+        self._tool_timeout = 120
         
         # Register single router tool first
         count = register_single_router_tool(self)
@@ -136,6 +142,27 @@ class MCPTools:
             logger.info("Direct ops tools registered")
         except ImportError as e:
             logger.warning(f"Direct ops tools not available: {e}")
+
+        # Session tools (sticky context)
+        try:
+            register_session_tools(self)
+            logger.info("Session tools registered")
+        except Exception as e:
+            logger.warning(f"Session tools not available: {e}")
+
+        # Bootstrap tools
+        try:
+            register_bootstrap_tools(self)
+            logger.info("Bootstrap tools registered")
+        except Exception as e:
+            logger.warning(f"Bootstrap tools not available: {e}")
+
+        # Smart tools
+        try:
+            register_smart_tools(self)
+            logger.info("Smart tools registered")
+        except Exception as e:
+            logger.warning(f"Smart tools not available: {e}")
     
     def _convert_dict_to_tooldef(self) -> None:
         """Convert dict format tools to ToolDefinition objects."""
@@ -189,29 +216,59 @@ class MCPTools:
         return self._tools.get(name)
     
     async def execute_tool(self, name: str, arguments: Dict[str, Any], user: str = "unknown") -> Dict[str, Any]:
-        """Execute tool by name."""
+        """Execute tool by name with per-tool timeout and execution isolation."""
         tool = self.get_tool(name)
         if not tool:
             return {
                 'content': [{'type': 'text', 'text': f'Unknown tool: {name}'}],
                 'isError': True
             }
-        
+
         logger.info(f"[MCP] execute_tool: name={name}, args={json.dumps(arguments)[:100]}")
+        # Ensure semaphore exists (safety fallback)
+        sem = getattr(self, "_executor_semaphore", None)
+        if sem is None:
+            self._executor_semaphore = asyncio.Semaphore(4)
+            sem = self._executor_semaphore
         
-        try:
-            call_args = dict(arguments or {})
-            call_args["_user"] = user
-            outcome = tool.handler(call_args)
-            result = await outcome if inspect.isawaitable(outcome) else outcome
-            logger.info(f"[MCP] result: isError={result.get('isError', False)}")
-            return result
-        except Exception as e:
-            logger.error(f"[MCP] error: {e}")
-            return {
-                'content': [{'type': 'text', 'text': f'Error: {e}'}],
-                'isError': True
-            }
+        # Use semaphore to limit concurrent execution
+        # Use semaphore to limit concurrent execution
+        async with sem:
+            try:
+                call_args = dict(arguments or {})
+                call_args["_user"] = user
+
+                # Determine if this is a local-only tool (shorter timeout)
+                local_only_tools = {"local_exec", "read_file", "write_file", "patch_file",
+                                    "list_dir", "path_ops", "service_control", "project_quick_facts",
+                                    "get_task_playbook", "start_work_session"}
+                timeout = 30 if name in local_only_tools else self._tool_timeout
+
+                # Execute with timeout
+                import time
+                start = time.monotonic()
+                outcome = tool.handler(call_args)
+                if inspect.isawaitable(outcome):
+                    result = await asyncio.wait_for(outcome, timeout=timeout)
+                else:
+                    result = outcome
+                elapsed = time.monotonic() - start
+
+                logger.info(f"[MCP] result: isError={result.get('isError', False)}, elapsed={elapsed:.2f}s")
+                return result
+
+            except asyncio.TimeoutError as e:
+                logger.error(f"[MCP] TIMEOUT: tool={name} after {timeout}s")
+                return {
+                    'content': [{'type': 'text', 'text': f'Tool execution timed out after {timeout}s: {name}'}],
+                    'isError': True
+                }
+            except Exception as e:
+                logger.error(f"[MCP] error: {e}")
+                return {
+                    'content': [{'type': 'text', 'text': f'Error executing {name}: {e}'}],
+                    'isError': True
+                }
 
 
 def register_tools(ssh_client=None) -> MCPTools:

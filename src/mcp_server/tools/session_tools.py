@@ -44,14 +44,24 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Project defaults for this server
+PROJECT_DEFAULTS = {
+    "workspace": "/a0/usr/projects/mcp_server",
+    "service": "mcp-server",
+    "repo": "mcp_server"
+}
+
 def _default_state() -> Dict[str, Any]:
     return {
-        "workspace": None,
-        "service": None,
-        "repo": None,
+        **PROJECT_DEFAULTS,
         "last_opened_at": None,
         "history": [],
     }
+
+def _ensure_state() -> None:
+    """Ensure session state file exists with defaults if missing."""
+    if not SESSION_STATE_PATH.exists():
+        _save_state(_default_state())
 
 
 def _load_state() -> Dict[str, Any]:
@@ -158,6 +168,9 @@ def register_session_tools(toolset) -> None:
             "content": [{"type": "text", "text": json.dumps(enriched, indent=2, ensure_ascii=False)}],
             "isError": False,
         }
+
+    # Auto-initialize session state with project defaults if file is missing
+    _ensure_state()
 
     async def clear_session_state(args: Dict[str, Any]) -> Dict[str, Any]:
         state = _default_state()

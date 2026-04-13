@@ -448,3 +448,42 @@ async def mcp_endpoint(
             },
             status_code=500
         )
+
+
+@health_router.get("/control-health")
+async def control_health_check():
+    """Check the health of the MCP control plane (tool registry and executor)."""
+    status = "healthy"
+    details = {
+        "tool_registry": "ok" if _tools else "uninitialized",
+        "local_tools": [],
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+    }
+
+    if not _tools:
+        status = "unhealthy"
+    else:
+        # Verify critical local-only tools are registered
+        critical_local = ["local_exec", "read_file", "write_file", "list_dir", "service_control"]
+        missing = [t for t in critical_local if t not in _tools._tools]
+        if missing:
+            details["missing_local_tools"] = missing
+            status = "degraded"
+        else:
+            details["local_tools"] = "ok"
+
+    # Check if executor is responsive by trying to get a tool definition (fast check)
+    try:
+        if _tools:
+            # Simple existence check, not execution
+            sample = _tools.get_tool("project_quick_facts")
+            if not sample:
+                details["executor"] = "warning: critical tool missing"
+                if status == "healthy": status = "degraded"
+            else:
+                details["executor"] = "ok"
+    except Exception as e:
+        details["executor"] = f"error: {e}"
+        status = "unhealthy"
+
+    return JSONResponse({"status": status, "checks": details}, status_code=200 if status == "healthy" else 503)

@@ -195,11 +195,35 @@ def register_router_tools(toolset) -> None:
         session = _load_session()
         goal = args.get("goal") or ""
         inferred_intent, reason = _infer_intent_from_goal(goal)
-        if args.get("path") and (args.get("search") is not None or args.get("replace") is not None):
+        targeted_edit = bool(args.get("path")) and (args.get("search") is not None or args.get("replace") is not None)
+        if targeted_edit:
             inferred_intent, reason = "fix", "Detected targeted file edit arguments."
         workflow_name, description = _route_intent(inferred_intent)
         workflow_args = _build_workflow_args(inferred_intent, args, session)
-        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 80 and not (args.get("path") and (args.get("search") is not None or args.get("replace") is not None))
+        broad_edit = (not targeted_edit) and inferred_intent in {"fix", "maintenance"} and len(goal.strip()) >= 40
+        if targeted_edit:
+            workflow_name = "safe_edit_workflow"
+            description = "Targeted file edit routed to the narrower safe edit workflow."
+            workflow_args = {
+                "path": args.get("path"),
+                "search": args.get("search"),
+                "replace": args.get("replace") or "",
+                "restart_service": args.get("service"),
+                "verify_port": args.get("port"),
+                "verify_health": bool(args.get("port")),
+                "use_sudo": args.get("use_sudo", False),
+                "timeout": args.get("timeout", 60),
+            }
+        elif broad_edit:
+            workflow_name = "prepare_bulk_staging_workflow"
+            description = "Broad MCP edit routed to bulk staging preparation first."
+            workflow_args = {
+                "project": args.get("project") or session.get("repo") or "mcp_server",
+                "project_root": args.get("project_root") or session.get("workspace") or "/a0/usr/projects/mcp_server",
+                "staging_id": args.get("staging_id"),
+                "timeout": args.get("timeout", 120),
+            }
+        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 40 and not targeted_edit
         if delegate:
             agent_args = {
                 "goal": goal,
@@ -208,7 +232,7 @@ def register_router_tools(toolset) -> None:
                 "service": args.get("service") or session.get("service"),
                 "priority": args.get("priority") or "high",
             }
-            payload = _make_prefix(inferred_intent, "enqueue_agent_zero_task", "Broad/heavy task delegated to Agent Zero first.", agent_args, session, {"goal": goal, "routing_reason": reason, "delegated_to_agent_zero": True})
+            payload = _make_prefix(inferred_intent, "enqueue_agent_zero_task", "Heavy goal delegated to Agent Zero first for faster autonomous execution.", agent_args, session, {"goal": goal, "routing_reason": reason, "delegated_to_agent_zero": True})
         else:
             payload = _make_prefix(inferred_intent, workflow_name, description, workflow_args, session, {"goal": goal, "routing_reason": reason})
         return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}], "isError": False}
@@ -217,15 +241,39 @@ def register_router_tools(toolset) -> None:
         session = _load_session()
         goal = args.get("goal") or ""
         inferred_intent, reason = _infer_intent_from_goal(goal)
-        if args.get("path") and (args.get("search") is not None or args.get("replace") is not None):
+        targeted_edit = bool(args.get("path")) and (args.get("search") is not None or args.get("replace") is not None)
+        if targeted_edit:
             inferred_intent, reason = "fix", "Detected targeted file edit arguments."
         workflow_name, description = _route_intent(inferred_intent)
         workflow_args = _build_workflow_args(inferred_intent, args, session)
-        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 80 and not (args.get("path") and (args.get("search") is not None or args.get("replace") is not None))
+        broad_edit = (not targeted_edit) and inferred_intent in {"fix", "maintenance"} and len(goal.strip()) >= 40
+        if targeted_edit:
+            workflow_name = "safe_edit_workflow"
+            description = "Targeted file edit routed to the narrower safe edit workflow."
+            workflow_args = {
+                "path": args.get("path"),
+                "search": args.get("search"),
+                "replace": args.get("replace") or "",
+                "restart_service": args.get("service"),
+                "verify_port": args.get("port"),
+                "verify_health": bool(args.get("port")),
+                "use_sudo": args.get("use_sudo", False),
+                "timeout": args.get("timeout", 60),
+            }
+        elif broad_edit:
+            workflow_name = "prepare_bulk_staging_workflow"
+            description = "Broad MCP edit routed to bulk staging preparation first."
+            workflow_args = {
+                "project": args.get("project") or session.get("repo") or "mcp_server",
+                "project_root": args.get("project_root") or session.get("workspace") or "/a0/usr/projects/mcp_server",
+                "staging_id": args.get("staging_id"),
+                "timeout": args.get("timeout", 120),
+            }
+        delegate = inferred_intent in {"maintenance", "fix", "debug", "deploy", "release", "incident", "hotfix", "recovery"} and len(goal.strip()) >= 40 and not targeted_edit
         user = args.get("_user", "unknown")
         if delegate:
             selected_workflow = "enqueue_agent_zero_task"
-            selected_description = "Broad/heavy task delegated to Agent Zero first."
+            selected_description = "Heavy goal delegated to Agent Zero first for faster autonomous execution."
             selected_args = {
                 "goal": goal,
                 "project": args.get("project") or session.get("repo") or "mcp_server",
@@ -246,7 +294,7 @@ def register_router_tools(toolset) -> None:
             "selected_workflow": selected_workflow,
             "description": selected_description,
             "workflow_args": selected_args,
-            "routing_reason": "Broad/heavy task delegated to Agent Zero first." if delegate else reason,
+            "routing_reason": "Heavy goal delegated to Agent Zero first for faster autonomous execution." if delegate else reason,
             "delegated_to_agent_zero": delegate,
             "is_error": bool(result.get("isError")),
             "summary": _summarize_result(result),

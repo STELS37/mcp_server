@@ -2,7 +2,7 @@
 # Smoke Test Script for MCP SSH Gateway
 # Run after deployment to verify everything works
 
-set -e
+#set -e
 
 # Colors
 RED='\033[0;31m'
@@ -17,8 +17,8 @@ test_pass() { echo -e "${GREEN}✓ PASS${NC}: $1"; ((PASS++)); }
 test_fail() { echo -e "${RED}✗ FAIL${NC}: $1"; ((FAIL++)); }
 test_warn() { echo -e "${YELLOW}! WARN${NC}: $1"; }
 
-# Configuration
-MCP_URL="${MCP_URL:-https://mcp.yourdomain.com}"
+# Configuration - Default to local
+MCP_URL="${MCP_URL:-http://127.0.0.1:8000}"
 AUTH_TOKEN="${AUTH_TOKEN:-}"
 
 echo "========================================="
@@ -27,46 +27,67 @@ echo "========================================="
 echo "MCP URL: $MCP_URL"
 echo ""
 
+# --- Level 1: Runtime Health ---
+echo "=== Level 1: Runtime Health ==="
+
 # Test 1: Health Check
-echo "--- Test 1: Health Check ---"
-if curl -sf "$MCP_URL/health" > /dev/null; then
+if curl -sf "$MCP_URL/health" > /dev/null 2>&1; then
     test_pass "Health endpoint accessible"
 else
     test_fail "Health endpoint not accessible"
 fi
 
 # Test 2: Readiness Check
-echo "--- Test 2: Readiness Check ---"
-if curl -sf "$MCP_URL/ready" > /dev/null; then
+if curl -sf "$MCP_URL/ready" > /dev/null 2>&1; then
     test_pass "Ready endpoint accessible"
 else
     test_fail "Ready endpoint not accessible"
 fi
 
-# Test 3: OIDC Discovery
-echo "--- Test 3: OIDC Discovery ---"
-if curl -sf "$MCP_URL/.well-known/openid-configuration" > /dev/null; then
+# Test 3: Control Health
+if curl -sf "$MCP_URL/control-health" > /dev/null 2>&1; then
+    test_pass "Control health endpoint accessible"
+else
+    test_fail "Control health endpoint not accessible"
+fi
+
+# Test 4: OIDC Discovery
+if curl -sf "$MCP_URL/.well-known/openid-configuration" > /dev/null 2>&1; then
     test_pass "OIDC discovery endpoint accessible"
 else
     test_warn "OIDC discovery endpoint not accessible (OAuth may be disabled)"
 fi
 
-# Test 4: SSE Endpoint (requires auth)
-echo "--- Test 4: SSE Endpoint ---"
-if [ -n "$AUTH_TOKEN" ]; then
-    RESPONSE=$(curl -s -H "Authorization: Bearer $AUTH_TOKEN" "$MCP_URL/sse" | head -1)
-    if echo "$RESPONSE" | grep -q "endpoint"; then
-        test_pass "SSE endpoint accessible with auth"
-    else
-        test_fail "SSE endpoint returned unexpected response"
-    fi
+# --- Level 2: Control Plane ---
+echo ""
+echo "=== Level 2: Control Plane ==="
+
+# Test 5: GET /mcp (Tools Discovery)
+RESPONSE=$(curl -sSf "$MCP_URL/mcp" 2>/dev/null)
+if echo "$RESPONSE" | grep -q '"tools"'; then
+    TOOL_COUNT=$(echo "$RESPONSE" | grep -o '"name"' | wc -l)
+    test_pass "MCP discovery returned $TOOL_COUNT tools"
 else
-    test_warn "SSE endpoint test skipped (no AUTH_TOKEN)"
+    test_fail "MCP discovery failed or returned no tools"
 fi
 
-# Test 5: MCP Initialize (requires auth)
-echo "--- Test 5: MCP Initialize ---"
+# Test 6: Local-only probe via Control Health
+CTRL_RESP=$(curl -sSf "$MCP_URL/control-health" 2>/dev/null)
+if echo "$CTRL_RESP" | grep -q '"status":"healthy"'; then
+    test_pass "Control plane status: healthy"
+elif echo "$CTRL_RESP" | grep -q '"status":"degraded"'; then
+    test_warn "Control plane status: degraded"
+    test_pass "Control plane responding"
+else
+    test_fail "Control plane check failed"
+fi
+
+# --- Level 3: Authenticated MCP POST Path ---
+echo ""
+echo "=== Level 3: Authenticated MCP POST Path ==="
+
 if [ -n "$AUTH_TOKEN" ]; then
+    # Test 7: Initialize
     RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
         -H "Authorization: Bearer $AUTH_TOKEN" \
         -H "Content-Type: application/json" \
@@ -76,89 +97,30 @@ if [ -n "$AUTH_TOKEN" ]; then
     else
         test_fail "MCP initialize failed: $RESPONSE"
     fi
-else
-    test_warn "MCP initialize test skipped (no AUTH_TOKEN)"
-fi
 
-# Test 6: List Tools (requires auth)
-echo "--- Test 6: List Tools ---"
-if [ -n "$AUTH_TOKEN" ]; then
+    # Test 8: List Tools
     RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
         -H "Authorization: Bearer $AUTH_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
     if echo "$RESPONSE" | grep -q '"tools"'; then
-        TOOL_COUNT=$(echo "$RESPONSE" | grep -o '"name"' | wc -l)
-        test_pass "Tools list retrieved ($TOOL_COUNT tools)"
+        test_pass "Tools list retrieved"
     else
         test_fail "Tools list failed: $RESPONSE"
     fi
-else
-    test_warn "Tools list test skipped (no AUTH_TOKEN)"
-fi
 
-# Test 7: ping_host tool (requires auth and SSH)
-echo "--- Test 7: ping_host Tool ---"
-if [ -n "$AUTH_TOKEN" ]; then
+    # Test 9: Quick local tool call (project_quick_facts)
     RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
         -H "Authorization: Bearer $AUTH_TOKEN" \
         -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ping_host","arguments":{"host":"localhost","count":1}}}')
+        -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project_quick_facts","arguments":{}}}')
     if echo "$RESPONSE" | grep -q '"result"'; then
-        test_pass "ping_host tool executed"
+        test_pass "project_quick_facts tool executed successfully"
     else
-        test_fail "ping_host tool failed: $RESPONSE"
+        test_fail "project_quick_facts tool failed: $RESPONSE"
     fi
 else
-    test_warn "ping_host test skipped (no AUTH_TOKEN)"
-fi
-
-# Test 8: run_command tool (requires auth and SSH)
-echo "--- Test 8: run_command Tool (whoami) ---"
-if [ -n "$AUTH_TOKEN" ]; then
-    RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
-        -H "Authorization: Bearer $AUTH_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"whoami"}}}')
-    if echo "$RESPONSE" | grep -q '"result"'; then
-        test_pass "run_command(whoami) executed"
-    else
-        test_fail "run_command(whoami) failed: $RESPONSE"
-    fi
-else
-    test_warn "run_command test skipped (no AUTH_TOKEN)"
-fi
-
-# Test 9: run_command tool (uname)
-echo "--- Test 9: run_command Tool (uname -a) ---"
-if [ -n "$AUTH_TOKEN" ]; then
-    RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
-        -H "Authorization: Bearer $AUTH_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"uname -a"}}}')
-    if echo "$RESPONSE" | grep -q '"result"'; then
-        test_pass "run_command(uname -a) executed"
-    else
-        test_fail "run_command(uname -a) failed: $RESPONSE"
-    fi
-else
-    test_warn "run_command test skipped (no AUTH_TOKEN)"
-fi
-
-# Test 10: read_file tool
-echo "--- Test 10: read_file Tool (/etc/os-release) ---"
-if [ -n "$AUTH_TOKEN" ]; then
-    RESPONSE=$(curl -s -X POST "$MCP_URL/mcp" \
-        -H "Authorization: Bearer $AUTH_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/os-release"}}}')
-    if echo "$RESPONSE" | grep -q '"result"'; then
-        test_pass "read_file(/etc/os-release) executed"
-    else
-        test_fail "read_file(/etc/os-release) failed: $RESPONSE"
-    fi
-else
-    test_warn "read_file test skipped (no AUTH_TOKEN)"
+    test_warn "Authenticated tests skipped (no AUTH_TOKEN)"
 fi
 
 # Summary

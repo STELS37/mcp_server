@@ -1,6 +1,7 @@
 """Smart workspace diagnosis and recovery tools."""
 import json
 import subprocess
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -8,6 +9,8 @@ from typing import Any, Callable, Dict, Optional
 PROJECTS_ROOT = Path("/a0/usr/projects")
 SESSION_STATE_PATH = Path("/a0/usr/projects/mcp_server/.runtime/session_state.json")
 LEDGER_PATH = Path("/a0/usr/projects/mcp_server/.runtime/agent_state.json")
+AGENT_ZERO_QUEUE_ROOT = Path("/a0/usr/projects/mcp_server/.runtime/agent_zero_queue")
+RECONCILE_AUDIT_PATH = AGENT_ZERO_QUEUE_ROOT / "reconcile_audit.log"
 
 
 @dataclass
@@ -117,6 +120,78 @@ def register_smart_tools(toolset) -> None:
         payload = {"workspace": str(workspace), "service": service, "task_type": task_type, "recommended_actions": plan}
         return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}], "isError": False}
 
+    async def self_check_server_state(args: Dict[str, Any]) -> Dict[str, Any]:
+        workspace = _resolve_workspace(args.get("project"), args.get("workspace"))
+        service = _resolve_service(args.get("service"), workspace)
+        checks = {}
+        issues = []
+
+        session = _load_json(SESSION_STATE_PATH, {"workspace": None, "service": None, "repo": None})
+        checks["session_state"] = {
+            "path": str(SESSION_STATE_PATH),
+            "exists": SESSION_STATE_PATH.exists(),
+            "workspace": session.get("workspace"),
+            "service": session.get("service"),
+            "repo": session.get("repo"),
+        }
+        if not SESSION_STATE_PATH.exists():
+            issues.append("session_state_missing")
+
+        local_names = []
+        http_names = []
+        http_error = None
+        try:
+            from mcp_server.tools.mcp_tools import MCPTools
+            local_names = sorted([t.name for t in MCPTools(None).list_tools()])
+        except Exception as exc:
+            issues.append("local_registry_build_failed")
+            checks["local_registry_error"] = str(exc)
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8000/mcp", timeout=10) as r:
+                body = json.loads(r.read().decode())
+            http_names = sorted([t.get("name") for t in body.get("result", {}).get("tools", [])])
+        except Exception as exc:
+            http_error = str(exc)
+            issues.append("http_discovery_failed")
+        missing_in_http = [n for n in local_names if n not in http_names]
+        extra_in_http = [n for n in http_names if n not in local_names]
+        checks["tool_registry"] = {
+            "local_count": len(local_names),
+            "http_count": len(http_names),
+            "missing_in_http": missing_in_http,
+            "extra_in_http": extra_in_http,
+            "http_error": http_error,
+        }
+        if missing_in_http or extra_in_http:
+            issues.append("tool_registry_mismatch")
+
+        service_active = _run(["systemctl", "is-active", service]).stdout.strip() or "unknown"
+        checks["service"] = {"service": service, "active": service_active}
+        if service_active not in {"active", "activating"}:
+            issues.append("service_not_active")
+
+        processing = sorted((AGENT_ZERO_QUEUE_ROOT / "processing").glob("*.json")) if AGENT_ZERO_QUEUE_ROOT.exists() else []
+        failed = sorted((AGENT_ZERO_QUEUE_ROOT / "failed").glob("*.json")) if AGENT_ZERO_QUEUE_ROOT.exists() else []
+        audit_exists = RECONCILE_AUDIT_PATH.exists()
+        checks["agent_zero_queue"] = {
+            "processing_count": len(processing),
+            "failed_count": len(failed),
+            "audit_exists": audit_exists,
+            "processing_tasks": [p.stem for p in processing[:20]],
+            "failed_tasks": [p.stem for p in failed[:20]],
+        }
+        if len(processing) > 3:
+            issues.append("agent_zero_processing_backlog")
+
+        payload = {
+            "workspace": str(workspace),
+            "service": service,
+            "checks": checks,
+            "issues": issues,
+            "healthy": not issues,
+        }
+        return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}], "isError": bool(issues)}
+
     async def auto_recover_service(args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = _resolve_workspace(args.get("project"), args.get("workspace"))
         service = _resolve_service(args.get("service"), workspace)
@@ -135,6 +210,7 @@ def register_smart_tools(toolset) -> None:
         ExtraToolDefinition("auto_diagnose_workspace", "Collect service, repo, failure, edit, and optional health context for the current or specified workspace.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}}, "required": []}, auto_diagnose_workspace, False, _ro("Auto Diagnose Workspace")),
         ExtraToolDefinition("quick_recovery_plan", "Suggest the fastest next-step sequence for debug, edit, ops, or general recovery in the current workspace.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "task_type": {"type": "string"}}, "required": []}, quick_recovery_plan, False, _ro("Quick Recovery Plan")),
         ExtraToolDefinition("auto_recover_service", "Attempt a direct restart/recovery for the current or specified service and optionally verify health endpoints.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}}, "required": []}, auto_recover_service, False, _rw("Auto Recover Service", False)),
+        ExtraToolDefinition("self_check_server_state", "Run a self-check across session state, local tool registry, HTTP discovery, service activity, and Agent Zero queue health.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}}, "required": []}, self_check_server_state, False, _ro("Self Check Server State")),
     ]
 
     for tool in extra:

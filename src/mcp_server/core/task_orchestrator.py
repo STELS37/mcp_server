@@ -273,6 +273,33 @@ class WorkerRunResult:
     summary: str
 
 
+
+STALL_CLASS_TIMEOUT = "timeout"
+STALL_CLASS_PATTERN_NOT_FOUND = "pattern_not_found"
+STALL_CLASS_SERVICE_NOT_READY = "service_not_ready"
+STALL_CLASS_SSH_CONNECTIVITY = "ssh_connectivity"
+STALL_CLASS_AGENT_ZERO_HANDOFF = "agent_zero_handoff"
+STALL_CLASS_SERVER_RUNTIME = "server_runtime"
+STALL_CLASS_UNKNOWN = "unknown"
+
+def classify_error(summary: str) -> str:
+    if not summary: return STALL_CLASS_UNKNOWN
+    s = summary.lower()
+    if any(k in s for k in ["timeout", "timed out", "took too long", "deadline"]): return STALL_CLASS_TIMEOUT
+    if any(k in s for k in ["pattern not found", "no pattern matched", "regex failed"]): return STALL_CLASS_PATTERN_NOT_FOUND
+    if any(k in s for k in ["service not ready", "connection refused", "not running", "unavailable"]): return STALL_CLASS_SERVICE_NOT_READY
+    if any(k in s for k in ["ssh", "authentication failed", "host key"]): return STALL_CLASS_SSH_CONNECTIVITY
+    if any(k in s for k in ["agent zero", "handoff", "queue"]): return STALL_CLASS_AGENT_ZERO_HANDOFF
+    if any(k in s for k in ["exception", "runtime", "traceback", "error", "failed"]): return STALL_CLASS_SERVER_RUNTIME
+    return STALL_CLASS_UNKNOWN
+
+def get_recovery_workflow_for_class(err_class: str) -> str:
+    return {
+        STALL_CLASS_TIMEOUT: "debug_service_workflow",
+        STALL_CLASS_SERVICE_NOT_READY: "full_service_recovery_workflow",
+        STALL_CLASS_SSH_CONNECTIVITY: "collect_project_diagnostics",
+        STALL_CLASS_AGENT_ZERO_HANDOFF: "get_agent_zero_queue_status",
+    }.get(err_class, "prepare_bulk_staging_workflow")
 class TaskOrchestratorWorker:
     def __init__(self, poll_interval: float = 2.0):
         self.poll_interval = poll_interval
@@ -361,20 +388,72 @@ class TaskOrchestratorWorker:
         task_id = str(task.get("task_id"))
         max_attempts = int(task.get("max_attempts", 2))
         attempts = int(task.get("attempts", 1))
+        payload = dict(task.get("payload") or {})
+
+        err_class = classify_error(summary)
+        stall_analysis = {"class": err_class, "summary_snippet": summary[:500]}
+        recovery_plan = {}
+
+        if err_class == STALL_CLASS_TIMEOUT:
+            for key in ("timeout_seconds", "timeout"):
+                if key in payload:
+                    try: payload[key] = int(payload[key]) * 2
+                    except (ValueError, TypeError): pass
+                    recovery_plan["action"] = "widen_timeout"
+                    break
+            task["payload"] = payload
+        elif err_class == STALL_CLASS_SERVICE_NOT_READY:
+            recovery_plan["action"] = "service_recovery_bias"
+            payload["service_recovery"] = True
+            for key in ("timeout", "timeout_seconds"):
+                try:
+                    current = int(payload.get(key, 30))
+                    payload[key] = current + 30
+                except (ValueError, TypeError):
+                    payload[key] = 60
+            task["payload"] = payload
+        elif err_class in (STALL_CLASS_PATTERN_NOT_FOUND, STALL_CLASS_SERVER_RUNTIME):
+            recovery_plan["action"] = "no_retry_classified"
+            max_attempts = attempts
+            task["max_attempts"] = max_attempts
+
+        task["stall_analysis"] = stall_analysis
+        task["recovery_plan"] = recovery_plan
         task["error"] = summary
         task["finished_at"] = utc_now()
         running = task_path(task_id, "running")
+
         if attempts < max_attempts:
             task["status"] = "queued"
             task["started_at"] = None
             save_json(task_path(task_id, "queued"), task)
             running.unlink(missing_ok=True)
             with task_log_path(task_id).open("a") as fh:
-                fh.write(f"[{utc_now()}] auto-requeue attempts={attempts}/{max_attempts}\n")
+                fh.write(f"[{utc_now()}] auto-requeue attempts={attempts}/{max_attempts} class={err_class}\n")
             return WorkerRunResult(task_id=task_id, final_status="queued", summary=summary)
+
         task["status"] = "failed"
         save_json(task_path(task_id, "failed"), task)
         running.unlink(missing_ok=True)
+
+        if not payload.get("is_auto_recovery"):
+            recovery_workflow = get_recovery_workflow_for_class(err_class)
+            rec_task = create_task(
+                kind="workflow",
+                payload={
+                    "workflow_name": recovery_workflow,
+                    "source_task_id": task_id,
+                    "error_class": err_class,
+                    "is_auto_recovery": True,
+                    "max_attempts": 1
+                },
+                requested_by="system_recovery"
+            )
+            task["recovery_task_id"] = rec_task["task_id"]
+            save_json(task_path(task_id, "failed"), task)
+            with task_log_path(task_id).open("a") as fh:
+                fh.write(f"[{utc_now()}] enqueued recovery task {rec_task['task_id']} ({recovery_workflow})\n")
+
         return WorkerRunResult(task_id=task_id, final_status="failed", summary=summary)
 
 

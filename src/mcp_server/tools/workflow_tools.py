@@ -1,6 +1,7 @@
 """Higher-level workflow tools to reduce repetitive multi-step troubleshooting."""
 import json
 import shlex
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -138,11 +139,12 @@ def register_workflow_tools(toolset) -> None:
         message = args.get("message") or "full fix workflow"
         user = args.get("_user", "unknown")
         code = (
-            "from pathlib import Path; import shutil; "
+            "from pathlib import Path; import shutil, sys; "
             f"p=Path({json.dumps(path)}); "
             "backup=str(p)+'.fullfix.bak'; shutil.copy2(p, backup); "
             f"s={json.dumps(search)}; r={json.dumps(replace)}; "
-            "t=p.read_text(); c=t.count(s); p.write_text(t.replace(s,r)); print('BACKUP', backup); print('REPLACEMENTS', c)"
+            "t=p.read_text(); c=t.count(s); print('BACKUP', backup); print('REPLACEMENTS', c); "
+            "sys.exit(3) if c == 0 else None; p.write_text(t.replace(s,r))"
         )
         parts = [
             f"cd {shlex.quote(root)}",
@@ -152,7 +154,7 @@ def register_workflow_tools(toolset) -> None:
         parts.extend(_optional_service_parts(service))
         parts.extend(_optional_port_parts(port))
         parts.extend([
-            "echo '== GIT ADD ==' && git add -A",
+            f"echo '== GIT ADD ==' && git add -- {shlex.quote(path)}",
             f"echo '== GIT COMMIT ==' && (git commit -m {shlex.quote(message)} || true)",
             "echo '== GIT PUSH ==' && (git push origin $(git branch --show-current) || (git pull --rebase origin $(git branch --show-current) && git push origin $(git branch --show-current))) || true",
             "echo '== AFTER GIT STATUS ==' && git status --short || true",
@@ -387,10 +389,50 @@ def register_workflow_tools(toolset) -> None:
         result = await toolset.ssh.execute(" && ".join(parts), user=user, use_sudo=bool(args.get("use_sudo", False)), timeout=int(args.get("timeout", 300)))
         return {"content": [{"type": "text", "text": result.stdout.strip() or result.stderr.strip()}], "isError": result.exit_code != 0}
 
+    async def prepare_bulk_staging_workflow(args: Dict[str, Any]) -> Dict[str, Any]:
+        root = _project_root(args.get("project"), args.get("project_root"))
+        staging_id = args.get("staging_id") or str(int(time.time()))
+        staging_root = f"{root}/.runtime/staging/{staging_id}"
+        worktree = f"{staging_root}/worktree"
+        user = args.get("_user", "unknown")
+        excludes = [".git", ".runtime/staging", "venv", "node_modules", "__pycache__"]
+        exclude_args = ' '.join(f"--exclude={shlex.quote(x)}" for x in excludes)
+        cmd = (
+            f"mkdir -p {shlex.quote(staging_root)} && "
+            f"rsync -a {exclude_args} {shlex.quote(root)}/ {shlex.quote(worktree)}/ && "
+            f"echo STAGING_ROOT={shlex.quote(staging_root)} && "
+            f"echo WORKTREE={shlex.quote(worktree)} && "
+            f"echo APPLY_HINT='use apply_bulk_staging_workflow with staging_path={worktree}'"
+        )
+        result = await toolset.ssh.execute(cmd, user=user, timeout=int(args.get('timeout', 120)))
+        return {"content": [{"type": "text", "text": result.stdout.strip() or result.stderr.strip()}], "isError": result.exit_code != 0}
+
+    async def apply_bulk_staging_workflow(args: Dict[str, Any]) -> Dict[str, Any]:
+        root = _project_root(args.get("project"), args.get("project_root"))
+        staging_path = args.get("staging_path")
+        if not staging_path:
+            return {"content": [{"type": "text", "text": "staging_path is required"}], "isError": True}
+        user = args.get("_user", "unknown")
+        service = args.get("service")
+        port = args.get("port")
+        delete = bool(args.get("delete_missing", False))
+        delete_flag = " --delete" if delete else ""
+        excludes = [".git", ".runtime/staging", "venv", "node_modules", "__pycache__"]
+        exclude_args = ' '.join(f"--exclude={shlex.quote(x)}" for x in excludes)
+        parts = [
+            f"echo '== APPLY STAGING ==' && rsync -a{delete_flag} {exclude_args} {shlex.quote(staging_path)}/ {shlex.quote(root)}/",
+        ]
+        parts.extend(_optional_service_parts(service))
+        parts.extend(_optional_port_parts(port))
+        result = await toolset.ssh.execute(" && ".join(parts), user=user, use_sudo=bool(args.get("use_sudo", False)), timeout=int(args.get('timeout', 180)))
+        return {"content": [{"type": "text", "text": result.stdout.strip() or result.stderr.strip()}], "isError": result.exit_code != 0}
+
     extra = [
         ExtraToolDefinition("debug_service_workflow", "Run a compact multi-step service debug workflow including status, logs, optional port, and optional health endpoints.", {"type": "object", "properties": {"service": {"type": "string"}, "port": {"type": "integer"}, "log_path": {"type": "string"}, "timeout": {"type": "integer", "default": 40}}, "required": ["service"]}, debug_service_workflow, False, _ro("Debug Service Workflow")),
         ExtraToolDefinition("safe_edit_workflow", "Back up a file, replace text, optionally restart a service, and optionally verify local health endpoints.", {"type": "object", "properties": {"path": {"type": "string"}, "search": {"type": "string"}, "replace": {"type": "string"}, "restart_service": {"type": "string"}, "verify_port": {"type": "integer"}, "verify_health": {"type": "boolean", "default": True}, "use_sudo": {"type": "boolean", "default": False}, "timeout": {"type": "integer", "default": 60}}, "required": ["path", "search", "replace"]}, safe_edit_workflow, False, _rw("Safe Edit Workflow", False)),
         ExtraToolDefinition("collect_project_diagnostics", "Collect a project-level diagnostics bundle including tree, disk, and optional service/port context.", {"type": "object", "properties": {"project_root": {"type": "string"}, "service_name": {"type": "string"}, "port": {"type": "integer"}, "timeout": {"type": "integer", "default": 40}}, "required": ["project_root"]}, collect_project_diagnostics, False, _ro("Collect Project Diagnostics")),
+        ExtraToolDefinition("prepare_bulk_staging_workflow", "Create a staging worktree copy under .runtime/staging so MCP edits can be prepared in bulk and applied back in one batch.", {"type": "object", "properties": {"project": {"type": "string"}, "project_root": {"type": "string"}, "staging_id": {"type": "string"}, "timeout": {"type": "integer", "default": 120}}, "required": []}, prepare_bulk_staging_workflow, False, _rw("Prepare Bulk Staging Workflow", False)),
+        ExtraToolDefinition("apply_bulk_staging_workflow", "Apply a prepared staging worktree back to the project in one batch, with optional service restart and health verification.", {"type": "object", "properties": {"project": {"type": "string"}, "project_root": {"type": "string"}, "staging_path": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}, "delete_missing": {"type": "boolean", "default": False}, "use_sudo": {"type": "boolean", "default": False}, "timeout": {"type": "integer", "default": 180}}, "required": ["staging_path"]}, apply_bulk_staging_workflow, False, _rw("Apply Bulk Staging Workflow", True)),
         ExtraToolDefinition("repo_sync_workflow", "Run a fetch/add/commit/push workflow for a repo with automatic pull --rebase fallback.", {"type": "object", "properties": {"project": {"type": "string"}, "project_root": {"type": "string"}, "message": {"type": "string"}, "timeout": {"type": "integer", "default": 90}}, "required": []}, repo_sync_workflow, False, _rw("Repo Sync Workflow", False)),
         ExtraToolDefinition("full_fix_workflow", "Run a one-shot fix workflow: edit a file, optionally restart a service, verify health, and sync git in one confirmed action.", {"type": "object", "properties": {"project": {"type": "string"}, "project_root": {"type": "string"}, "path": {"type": "string"}, "search": {"type": "string"}, "replace": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}, "message": {"type": "string"}, "use_sudo": {"type": "boolean", "default": False}, "timeout": {"type": "integer", "default": 180}}, "required": ["path", "search", "replace"]}, full_fix_workflow, False, _rw("Full Fix Workflow", False)),
         ExtraToolDefinition("full_deploy_workflow", "Run a one-shot deploy workflow: optional pre command, deploy/build command, restart service, optional post command, and verify health.", {"type": "object", "properties": {"project": {"type": "string"}, "project_root": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}, "pre_command": {"type": "string"}, "deploy_command": {"type": "string"}, "build_command": {"type": "string"}, "post_command": {"type": "string"}, "use_sudo": {"type": "boolean", "default": False}, "timeout": {"type": "integer", "default": 240}}, "required": []}, full_deploy_workflow, False, _rw("Full Deploy Workflow", False)),

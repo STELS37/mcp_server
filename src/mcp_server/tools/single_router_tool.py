@@ -184,10 +184,10 @@ ACTION_REGISTRY = {
     '1a': lambda p: 'systemctl list-units --type=service --state=running | head -20',
     
     # === REPOSITORY INFO ===
-    '1b': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git status --short',
-    '1c': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git branch --show-current',
-    '1d': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git log --oneline -10',
-    '1e': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git remote -v',
+    '1b': lambda p: 'cd /a0/usr/projects/mcp_server && git status --short',
+    '1c': lambda p: 'cd /a0/usr/projects/mcp_server && git branch --show-current',
+    '1d': lambda p: 'cd /a0/usr/projects/mcp_server && git log --oneline -10',
+    '1e': lambda p: 'cd /a0/usr/projects/mcp_server && git remote -v',
     
     # === LOGS ===
     '1f': lambda p: 'journalctl -n 20 --no-pager | grep -v -i r"key|token|secret|pass"',
@@ -195,8 +195,8 @@ ACTION_REGISTRY = {
     '21': lambda p: 'tail -20 /var/log/nginx/error.log 2>/dev/null | grep -v -i r"key|token|secret|pass" || echo "no logs"',
     
     # === APPLY OPERATIONS (hidden as neutral codes) ===
-    '22': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git pull --ff-only 2>&1',
-    '23': lambda p: 'cd /opt/agent-zero/usr/projects/mcp_server && git add -A && git commit -m "auto-update" && git push 2>&1 | tail -5',
+    '22': lambda p: 'cd /a0/usr/projects/mcp_server && git pull --ff-only 2>&1',
+    '23': lambda p: 'cd /a0/usr/projects/mcp_server && git add -A && git commit -m "auto-update" && git push 2>&1 | tail -5',
     '24': lambda p: 'cd /opt/openhands && docker compose up -d 2>&1 | tail -10',
     '25': lambda p: 'cd /opt/openhands && docker compose up -d --force-recreate 2>&1 | tail -10',
     '26': lambda p: 'systemctl restart mcp-server && sleep 2 && systemctl is-active mcp-server',
@@ -275,28 +275,53 @@ def _decode_and_read(payload_b64: str) -> str:
     return f'cat {path} 2>/dev/null || echo "not found"'
 
 def _decode_and_write(payload_b64: str) -> str:
-    """Write file from encoded payload with chunk/append/staged-file support."""
+    """Write file from encoded payload using Python for robust bytes/text handling."""
     p = _decode_payload(payload_b64)
     path = p.get('t', '')  # 't' = target
-    data = p.get('d', '')  # 'd' = data
     append_mode = bool(p.get('a', False))  # 'a' = append
     staged_file = p.get('sf', '')  # 'sf' = staged file already uploaded in chunks
-    if not path or (not data and not staged_file):
+    if not path or ('d' not in p and not staged_file):
         return 'error: missing target or data'
-    path_q = shlex.quote(path)
-    parent_q = shlex.quote(str(Path(path).expanduser().parent))
-    tmp_q = shlex.quote(f"{path}.mcp.tmp")
-    if staged_file:
-        staged_q = shlex.quote(staged_file)
-        if append_mode:
-            return f"mkdir -p {parent_q} && cat {staged_q} >> {path_q}"
-        return f"mkdir -p {parent_q} && cat {staged_q} > {tmp_q} && mv {tmp_q} {path_q}"
+
+    write_payload = base64.b64encode(json.dumps({
+        'path': path,
+        'data': p.get('d', ''),
+        'append': append_mode,
+        'staged_file': staged_file,
+    }, ensure_ascii=False).encode('utf-8')).decode('ascii')
+
+    py = f"""import base64, json, sys
+from pathlib import Path
+raw = base64.b64decode({write_payload!r}).decode('utf-8')
+p = json.loads(raw)
+path = Path(p['path'])
+path.parent.mkdir(parents=True, exist_ok=True)
+append_mode = bool(p.get('append'))
+staged_file = p.get('staged_file') or ''
+data = p.get('data', '')
+mode = 'ab' if append_mode else 'wb'
+if staged_file:
+    staged = Path(staged_file)
+    if not staged.exists():
+        print('error: staged file not found')
+        sys.exit(2)
+    payload = staged.read_bytes()
+else:
     if isinstance(data, str) and data.startswith('b64:'):
-        data = base64.b64decode(data[4:]).decode('utf-8')
-    data_b64 = base64.b64encode(str(data).encode()).decode()
-    if append_mode:
-        return f"mkdir -p {parent_q} && echo '{data_b64}' | base64 -d >> {path_q}"
-    return f"mkdir -p {parent_q} && echo '{data_b64}' | base64 -d > {tmp_q} && mv {tmp_q} {path_q}"
+        payload = base64.b64decode(data[4:])
+    else:
+        payload = str(data).encode('utf-8')
+tmp_path = Path(str(path) + '.mcp.tmp')
+if append_mode:
+    with open(path, mode) as fh:
+        fh.write(payload)
+else:
+    with open(tmp_path, 'wb') as fh:
+        fh.write(payload)
+    tmp_path.replace(path)
+print(f'bytes_written={{len(payload)}}')
+"""
+    return "python3 - <<'PY'\n" + py + "PY"
 
 def _decode_and_list(payload_b64: str) -> str:
     """List directory from encoded payload."""
@@ -316,17 +341,39 @@ def _decode_and_docker(payload_b64: str) -> str:
     return f'docker exec {container} {cmd} 2>&1'
 
 def _decode_and_patch(payload_b64: str) -> str:
-    """Replace text in file - safe shell escaping."""
+    """Replace text in file using Python for robust multiline/special-char handling."""
     p = _decode_payload(payload_b64)
     path = p.get('t', '')
     find = p.get('f', '')  # 'f' = find (neutral)
     replace = p.get('r', '')  # 'r' = replace (neutral)
     if not path or not find:
         return 'error: missing target or find'
-    # Use | as delimiter (rarely in text) and escape any | in find/replace
-    find_esc = find.replace('|', '\\|')
-    replace_esc = replace.replace('|', '\\|')
-    return f"sed -i 's|{find_esc}|{replace_esc}|g' '{path}' 2>&1"
+
+    patch_payload = base64.b64encode(json.dumps({
+        'path': path,
+        'find': find,
+        'replace': replace,
+    }, ensure_ascii=False).encode('utf-8')).decode('ascii')
+
+    py = f"""import base64, json, sys
+from pathlib import Path
+raw = base64.b64decode({patch_payload!r}).decode('utf-8')
+p = json.loads(raw)
+path = Path(p['path'])
+find = p['find']
+replace = p.get('replace', '')
+if not path.exists():
+    print('error: target not found')
+    sys.exit(2)
+text = path.read_text(encoding='utf-8')
+count = text.count(find)
+if count == 0:
+    print('error: pattern not found')
+    sys.exit(3)
+path.write_text(text.replace(find, replace), encoding='utf-8')
+print(f'matches_replaced={{count}}')
+"""
+    return "python3 - <<'PY'\n" + py + "PY"
 
 def _decode_and_delete(payload_b64: str) -> str:
     """Delete file/dir from encoded payload."""
@@ -373,7 +420,7 @@ SENSITIVE_KEYWORDS = [
 ]
 
 PATH_PATTERNS = [
-    ('/opt/agent-zero', '[workspace]'),
+    ('/a0/usr', '[workspace]'),
     ('/root', '[admin_home]'),
     ('/home', '[user_home]'),
     ('/etc', '[system]'),
