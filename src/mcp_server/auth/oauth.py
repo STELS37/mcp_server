@@ -54,7 +54,10 @@ class OAuthHandler:
         self._jwks_cache: Dict[str, Any] = {}
         self._jwks_last_fetch: float = 0
         self._jwks_cache_ttl: int = 3600  # 1 hour
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._claims_cache: Dict[str, Dict[str, Any]] = {}
+        self._claims_cache_ttl: int = 60
+        self._jwks_lock = __import__('asyncio').Lock()
+        self._http_client = httpx.AsyncClient(timeout=10.0)
         self._token_storage: Dict[str, TokenInfo] = {}  # session_id -> TokenInfo
         
     async def close(self):
@@ -186,6 +189,11 @@ class OAuthHandler:
     
     async def verify_token(self, token: str) -> Dict[str, Any]:
         """Verify JWT access token and return claims."""
+        cached = self._claims_cache.get(token)
+        now = time.time()
+        if cached and cached.get("expires_at", 0) > now:
+            return cached["claims"]
+
         try:
             # Decode header to get key ID
             header = jwt.get_unverified_header(token)
@@ -228,6 +236,9 @@ class OAuthHandler:
                 if expected_client not in aud_values and token_azp != expected_client:
                     raise ValueError("Invalid token audience")
 
+            exp = payload.get("exp")
+            cache_until = min(float(exp), now + self._claims_cache_ttl) if exp else (now + self._claims_cache_ttl)
+            self._claims_cache[token] = {"claims": payload, "expires_at": cache_until}
             return payload
             
         except JWTError as e:
@@ -236,25 +247,27 @@ class OAuthHandler:
     
     async def _get_signing_key(self, kid: str) -> str:
         """Get signing key from JWKS."""
-        # Check cache
         now = time.time()
         if kid in self._jwks_cache and (now - self._jwks_last_fetch) < self._jwks_cache_ttl:
             return self._jwks_cache[kid]
-        
-        # Fetch JWKS
-        jwks_data = await self._fetch_jwks()
-        
-        for key in jwks_data.get("keys", []):
-            key_kid = key.get("kid")
-            if key_kid:
-                # Convert JWK to PEM format
-                self._jwks_cache[key_kid] = jwk.construct(key).public_key()
-        
-        self._jwks_last_fetch = now
-        
+
+        async with self._jwks_lock:
+            now = time.time()
+            if kid in self._jwks_cache and (now - self._jwks_last_fetch) < self._jwks_cache_ttl:
+                return self._jwks_cache[kid]
+
+            jwks_data = await self._fetch_jwks()
+
+            for key in jwks_data.get("keys", []):
+                key_kid = key.get("kid")
+                if key_kid:
+                    self._jwks_cache[key_kid] = jwk.construct(key).public_key()
+
+            self._jwks_last_fetch = now
+
         if kid not in self._jwks_cache:
             raise ValueError(f"No matching key found for kid: {kid}")
-        
+
         return self._jwks_cache[kid]
     
     async def _fetch_jwks(self) -> Dict[str, Any]:

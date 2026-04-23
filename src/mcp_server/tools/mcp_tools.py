@@ -240,8 +240,9 @@ class MCPTools:
 
                 # Determine if this is a local-only tool (shorter timeout)
                 local_only_tools = {"local_exec", "read_file", "write_file", "patch_file",
-                                    "list_dir", "path_ops", "service_control", "project_quick_facts",
-                                    "get_task_playbook", "start_work_session"}
+                                    "list_dir", "http_probe", "path_ops", "service_control",
+                                    "project_quick_facts", "get_task_playbook", "start_work_session",
+                                    "summarize_repo_state", "self_check_server_state"}
                 timeout = 30 if name in local_only_tools else self._tool_timeout
 
                 # Execute with timeout

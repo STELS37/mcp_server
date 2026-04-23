@@ -3,17 +3,33 @@ import logging
 from typing import Optional, Callable, Any
 from functools import wraps
 
+from mcp_server.auth.oauth import OAuthHandler, TokenInfo
+
 from fastapi import Request, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from mcp_server.auth.oauth import OAuthHandler, TokenInfo
 from mcp_server.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
+_global_oauth_handler: Optional[OAuthHandler] = None
+
+
+def set_oauth_handler(handler: Optional[OAuthHandler]) -> None:
+    global _global_oauth_handler
+    _global_oauth_handler = handler
+
+
+def _resolve_oauth_handler(request: Request) -> Optional[OAuthHandler]:
+    app_handler = getattr(getattr(request, "app", None), "state", None)
+    if app_handler is not None:
+        handler = getattr(request.app.state, "oauth_handler", None)
+        if handler is not None:
+            return handler
+    return _global_oauth_handler
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -101,8 +117,11 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Verify token
-    handler = OAuthHandler(settings.oauth)
+    # Verify token using the shared app handler so JWKS and claims caches survive across requests
+    handler = _resolve_oauth_handler(request)
+    if handler is None:
+        handler = OAuthHandler(settings.oauth)
+        set_oauth_handler(handler)
     try:
         claims = await handler.verify_token(credentials.credentials)
         return claims

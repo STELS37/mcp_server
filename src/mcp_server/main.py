@@ -14,7 +14,7 @@ import structlog
 
 from mcp_server.core.settings import get_settings
 from mcp_server.auth.oauth import OAuthHandler
-from mcp_server.auth.middleware import AuthMiddleware
+from mcp_server.auth.middleware import AuthMiddleware, set_oauth_handler
 from mcp_server.tools.ssh_client import SSHClient
 from mcp_server.tools.mcp_tools import MCPTools
 from mcp_server.api.sse_transport import SSETransport, MCPProtocolHandler
@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
     if settings.oauth.enabled:
         try:
             _oauth_handler = OAuthHandler(settings.oauth)
+            set_oauth_handler(_oauth_handler)
+            app.state.oauth_handler = _oauth_handler
             logger.info("OAuth handler initialized", issuer=settings.oauth.issuer_url)
         except Exception as e:
             logger.error(f"Failed to initialize OAuth handler: {e}")
@@ -103,7 +105,7 @@ async def lifespan(app: FastAPI):
     logger.info("SSE transport initialized")
     
     # Set global instances for routes
-    set_app_instances(_ssh_client, _tools, _oauth_handler, _sse_transport)
+    set_app_instances(_ssh_client, _tools, _oauth_handler, _sse_transport, protocol_handler)
     
     yield
     
@@ -115,6 +117,8 @@ async def lifespan(app: FastAPI):
     
     if _oauth_handler:
         await _oauth_handler.close()
+        set_oauth_handler(None)
+        app.state.oauth_handler = None
 
 
 def create_app() -> FastAPI:

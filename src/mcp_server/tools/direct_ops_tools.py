@@ -56,7 +56,7 @@ def register_direct_ops_tools(toolset) -> None:
         if len(command) > 1500 or '\n' in command:
             runtime_dir = Path("/a0/usr/projects/mcp_server/.runtime")
             runtime_dir.mkdir(parents=True, exist_ok=True)
-            script_file = runtime_dir / f"exec_{os.getpid()}_{id(command)}.sh"
+            script_file = runtime_dir / f"exec_{os.getpid()}_{os.urandom(4).hex()}.sh"
             script_file.write_text(f"#!/bin/bash\nset -e\n{command}")
             script_file.chmod(0o700)
             cmd = ["/bin/bash", str(script_file)]
@@ -64,6 +64,9 @@ def register_direct_ops_tools(toolset) -> None:
             cmd = ["/bin/bash", "-c", command]
             script_file = None
         
+        if not Path(cwd).is_dir():
+            return _result(f"Error: working directory does not exist: {cwd}", True)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -84,6 +87,8 @@ def register_direct_ops_tools(toolset) -> None:
             }
             return _json_result(result)
         except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
             return _result(f"Error: command timed out after {timeout}s", True)
         except Exception as e:
             return _result(f"Error: {e}", True)
@@ -183,36 +188,118 @@ def register_direct_ops_tools(toolset) -> None:
         except Exception as e:
             return _result(f"Error: {e}", True)
     
+    def _list_dir_sync(path_str: str) -> Dict[str, Any]:
+        p = Path(path_str)
+        if not p.exists():
+            return {"error": f"path not found: {path_str}"}
+        if not p.is_dir():
+            return {"error": f"not a directory: {path_str}"}
+
+        items = []
+        def _sort_key(x):
+            try: return (not x.is_dir(), x.name.lower())
+            except: return (False, x.name.lower())
+
+        for item in sorted(p.iterdir(), key=_sort_key):
+            try:
+                is_link = item.is_symlink()
+                it_type = "link" if is_link else ("dir" if item.is_dir() else "file")
+                stat = item.stat() # Follows link; raises on broken link -> caught below
+                items.append({
+                    "name": item.name,
+                    "type": it_type,
+                    "size": stat.st_size if not is_link and item.is_file() else None,
+                    "modified": stat.st_mtime,
+                })
+            except Exception:
+                items.append({"name": item.name, "type": "unknown"})
+        return {
+            "success": True,
+            "path": str(p),
+            "count": len(items),
+            "items": items[:200],
+        }
+
     async def list_dir(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """List directory contents with structured output."""
         path = arguments.get("path", "/a0/usr/projects/mcp_server")
-        
         try:
-            p = Path(path)
-            if not p.exists():
-                return _result(f"Error: path not found: {path}", True)
-            if not p.is_dir():
-                return _result(f"Error: not a directory: {path}", True)
-            
-            items = []
-            for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                try:
-                    stat = item.stat()
-                    items.append({
-                        "name": item.name,
-                        "type": "dir" if item.is_dir() else "file",
-                        "size": stat.st_size if item.is_file() else None,
-                        "modified": stat.st_mtime,
-                    })
-                except Exception:
-                    items.append({"name": item.name, "type": "unknown"})
-            
-            return _json_result({
-                "success": True,
-                "path": str(p),
-                "count": len(items),
-                "items": items[:200],  # Limit
-            })
+            result = await asyncio.to_thread(_list_dir_sync, path)
+            if "error" in result:
+                return _result(f"Error: {result['error']}", True)
+            return _json_result(result)
+        except Exception as e:
+            return _result(f"Error: {e}", True)
+
+    def _http_probe_sync(url: str, method: str, headers: Dict[str, str], timeout: int) -> Dict[str, Any]:
+        import urllib.request
+        import urllib.error
+
+        request = urllib.request.Request(url=url, method=method.upper())
+        for key, value in headers.items():
+            request.add_header(str(key), str(value))
+        import ssl
+        ctx = None
+        if url.startswith("https://"):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, context=ctx) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                return {
+                    "success": True,
+                    "url": url,
+                    "status_code": response.status,
+                    "headers": dict(response.headers.items()),
+                    "body": body[:5000],
+                    "truncated": len(body) > 5000,
+                }
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            return {
+                "success": False,
+                "url": url,
+                "status_code": e.code,
+                "headers": dict(e.headers.items()) if e.headers else {},
+                "body": body[:5000],
+                "truncated": len(body) > 5000,
+            }
+        except urllib.error.URLError as e:
+            return {
+                "success": False,
+                "url": url,
+                "status_code": None,
+                "headers": {},
+                "body": str(e.reason),
+                "truncated": False,
+            }
+
+    async def http_probe(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Probe a local HTTP endpoint without using shell/curl."""
+        raw_url = arguments.get("url") or arguments.get("path") or "/health"
+        method = arguments.get("method", "GET")
+        timeout = int(arguments.get("timeout", 5))
+        headers = arguments.get("headers") or {}
+        base_url = arguments.get("base_url", "http://127.0.0.1:8000")
+
+        if raw_url.startswith("/"):
+            url = base_url.rstrip("/") + raw_url
+        else:
+            url = raw_url
+
+        from urllib.parse import urlparse
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname
+        if parsed_url.scheme not in ("http", "https"):
+            return _result(f"Error: unsupported URL scheme for probe: {url}", True)
+        if hostname not in ("127.0.0.1", "localhost", "::1"):
+            return _result(f"Error: only loopback HTTP probes are allowed: {url}", True)
+
+        try:
+            result = await asyncio.to_thread(_http_probe_sync, url, method, headers, timeout)
+            return _json_result(result, is_error=not result.get("success", False))
         except Exception as e:
             return _result(f"Error: {e}", True)
     
@@ -269,14 +356,36 @@ def register_direct_ops_tools(toolset) -> None:
         service = arguments.get("service", "mcp-server")
         action = arguments.get("action", "status")
         lines = arguments.get("lines", 50)
+        timeout = arguments.get("timeout", 20)
         
         valid_actions = ["status", "logs", "start", "stop", "restart", "reload", "is-active"]
         if action not in valid_actions:
             return _result(f"Error: invalid action. Use: {valid_actions}", True)
         
         try:
+            no_block_actions = {"start", "stop", "restart", "reload"}
             if action == "logs":
                 cmd = ["journalctl", "-u", service, "-n", str(lines), "--no-pager"]
+            elif action in no_block_actions:
+                cmd = ["systemctl", "--no-block", action, service]
+                proc = await asyncio.to_thread(
+                    subprocess.Popen,
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return _json_result({
+                    "success": True,
+                    "action": action,
+                    "service": service,
+                    "exit_code": 0,
+                    "output": "",
+                    "error": "",
+                    "mode": "no_block",
+                    "pid": proc.pid,
+                    "note": "systemctl request dispatched asynchronously; service state may still be converging",
+                })
             else:
                 cmd = ["systemctl", action, service]
             
@@ -285,16 +394,27 @@ def register_direct_ops_tools(toolset) -> None:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             
-            return _json_result({
-                "success": proc.returncode == 0,
+            output_text = stdout.decode("utf-8", errors="replace")
+            error_text = stderr.decode("utf-8", errors="replace")
+            success = proc.returncode == 0
+            payload = {
+                "success": success,
                 "action": action,
                 "service": service,
                 "exit_code": proc.returncode,
-                "output": stdout.decode("utf-8", errors="replace"),
-                "error": stderr.decode("utf-8", errors="replace"),
-            })
+                "output": output_text,
+                "error": error_text,
+                "mode": "sync",
+            }
+            return _json_result(payload, is_error=not success)
+        except FileNotFoundError:
+            return _result("Error: systemctl/journalctl not found in PATH", True)
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
+            return _result(f"Error: service control timed out after {timeout}s", True)
         except Exception as e:
             return _result(f"Error: {e}", True)
     
@@ -342,6 +462,18 @@ def register_direct_ops_tools(toolset) -> None:
             list_dir, False, _ro("List Dir")
         ),
         ExtraToolDefinition(
+            "http_probe", "Probe a loopback HTTP endpoint without using shell/curl.",
+            {"type": "object", "properties": {
+                "url": {"type": "string", "description": "Absolute loopback URL or relative path"},
+                "path": {"type": "string", "description": "Relative path like /health"},
+                "base_url": {"type": "string", "description": "Base URL for relative paths", "default": "http://127.0.0.1:8000"},
+                "method": {"type": "string", "description": "HTTP method", "default": "GET"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 5},
+                "headers": {"type": "object", "description": "Optional headers"}
+            }, "required": []},
+            http_probe, False, _ro("HTTP Probe")
+        ),
+        ExtraToolDefinition(
             "path_ops", "Perform path operations: mkdir, copy, move, delete. Accepts operation/source/destination or action/path/src/dst aliases.",
             {"type": "object", "properties": {
                 "operation": {"type": "string", "enum": ["mkdir", "copy", "move", "delete"]},
@@ -359,7 +491,8 @@ def register_direct_ops_tools(toolset) -> None:
             {"type": "object", "properties": {
                 "service": {"type": "string", "description": "Service name", "default": "mcp-server"},
                 "action": {"type": "string", "enum": ["status", "logs", "start", "stop", "restart", "reload", "is-active"]},
-                "lines": {"type": "integer", "description": "Lines for logs action", "default": 50}
+                "lines": {"type": "integer", "description": "Lines for logs action", "default": 50},
+                "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 20}
             }, "required": []},
             service_control, False, _rw("Service Control")
         ),

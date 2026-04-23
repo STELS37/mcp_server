@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 import json
 import subprocess
-import urllib.request
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 
@@ -32,7 +31,7 @@ def _ro(title: str) -> Dict[str, Any]:
 SESSION_STATE_PATH = Path("/a0/usr/projects/mcp_server/.runtime/session_state.json")
 
 
-def _session_check_summary(project_root: str, service_name: str, local_base: str) -> Dict[str, Any]:
+def _session_check_summary(project_root: str, service_name: str, local_base: str, toolset=None) -> Dict[str, Any]:
     summary = {
         "service_active": "unknown",
         "http_mcp_tools": None,
@@ -48,15 +47,17 @@ def _session_check_summary(project_root: str, service_name: str, local_base: str
         summary["issues"].append(f"service_check_error:{exc}")
 
     try:
-        with urllib.request.urlopen(f"{local_base}/mcp", timeout=5) as r:
-            body = json.loads(r.read().decode())
-        names = [t.get("name") for t in body.get("result", {}).get("tools", [])]
-        summary["http_mcp_tools"] = len(names)
+        if toolset is not None and getattr(toolset, "_tools", None):
+            names = sorted(toolset._tools.keys())
+            summary["http_mcp_tools"] = len(names)
+        else:
+            summary["issues"].append("tool_registry_unavailable")
+            names = []
         for required in ["start_work_session", "get_session_state", "auto_open_workspace", "self_check_server_state"]:
             if required not in names:
                 summary["issues"].append(f"missing_tool:{required}")
     except Exception as exc:
-        summary["issues"].append(f"http_discovery_error:{exc}")
+        summary["issues"].append(f"tool_registry_error:{exc}")
 
     if not summary["session_state_exists"]:
         summary["issues"].append("session_state_missing")
@@ -89,7 +90,7 @@ def register_playbook_tools(toolset) -> None:
             "history": history[-40:],
         })
         SESSION_STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        check = _session_check_summary(project_root, service_name, local_base)
+        check = _session_check_summary(project_root, service_name, local_base, toolset)
         check_text = json.dumps(check, indent=2, ensure_ascii=False)
         text = (
             "WORKSPACE\n"

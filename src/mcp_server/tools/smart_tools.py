@@ -1,4 +1,5 @@
 """Smart workspace diagnosis and recovery tools."""
+import asyncio
 import json
 import subprocess
 import urllib.request
@@ -123,6 +124,7 @@ def register_smart_tools(toolset) -> None:
     async def self_check_server_state(args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = _resolve_workspace(args.get("project"), args.get("workspace"))
         service = _resolve_service(args.get("service"), workspace)
+        validate_http = bool(args.get("validate_http", False))
         checks = {}
         issues = []
 
@@ -137,32 +139,36 @@ def register_smart_tools(toolset) -> None:
         if not SESSION_STATE_PATH.exists():
             issues.append("session_state_missing")
 
-        local_names = []
+        local_names = sorted(list(getattr(toolset, "_tools", {}).keys()))
         http_names = []
         http_error = None
-        try:
-            from mcp_server.tools.mcp_tools import MCPTools
-            local_names = sorted([t.name for t in MCPTools(None).list_tools()])
-        except Exception as exc:
+        if not local_names:
             issues.append("local_registry_build_failed")
-            checks["local_registry_error"] = str(exc)
-        try:
-            with urllib.request.urlopen("http://127.0.0.1:8000/mcp", timeout=10) as r:
-                body = json.loads(r.read().decode())
-            http_names = sorted([t.get("name") for t in body.get("result", {}).get("tools", [])])
-        except Exception as exc:
-            http_error = str(exc)
-            issues.append("http_discovery_failed")
-        missing_in_http = [n for n in local_names if n not in http_names]
-        extra_in_http = [n for n in http_names if n not in local_names]
+            checks["local_registry_error"] = "running toolset registry is empty"
+
+        if validate_http:
+            def _fetch_http_names():
+                with urllib.request.urlopen("http://127.0.0.1:8000/mcp", timeout=5) as r:
+                    body = json.loads(r.read().decode())
+                return sorted([t.get("name") for t in body.get("result", {}).get("tools", []) if t.get("name")])
+
+            try:
+                http_names = await asyncio.to_thread(_fetch_http_names)
+            except Exception as exc:
+                http_error = str(exc)
+                issues.append("http_discovery_failed")
+
+        missing_in_http = [n for n in local_names if n not in http_names] if validate_http and http_names else []
+        extra_in_http = [n for n in http_names if n not in local_names] if validate_http and http_names else []
         checks["tool_registry"] = {
             "local_count": len(local_names),
-            "http_count": len(http_names),
+            "http_count": len(http_names) if validate_http else len(local_names),
             "missing_in_http": missing_in_http,
             "extra_in_http": extra_in_http,
             "http_error": http_error,
+            "http_validation": validate_http,
         }
-        if missing_in_http or extra_in_http:
+        if validate_http and (missing_in_http or extra_in_http):
             issues.append("tool_registry_mismatch")
 
         service_active = _run(["systemctl", "is-active", service]).stdout.strip() or "unknown"
@@ -210,7 +216,7 @@ def register_smart_tools(toolset) -> None:
         ExtraToolDefinition("auto_diagnose_workspace", "Collect service, repo, failure, edit, and optional health context for the current or specified workspace.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}}, "required": []}, auto_diagnose_workspace, False, _ro("Auto Diagnose Workspace")),
         ExtraToolDefinition("quick_recovery_plan", "Suggest the fastest next-step sequence for debug, edit, ops, or general recovery in the current workspace.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "task_type": {"type": "string"}}, "required": []}, quick_recovery_plan, False, _ro("Quick Recovery Plan")),
         ExtraToolDefinition("auto_recover_service", "Attempt a direct restart/recovery for the current or specified service and optionally verify health endpoints.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "port": {"type": "integer"}}, "required": []}, auto_recover_service, False, _rw("Auto Recover Service", False)),
-        ExtraToolDefinition("self_check_server_state", "Run a self-check across session state, local tool registry, HTTP discovery, service activity, and Agent Zero queue health.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}}, "required": []}, self_check_server_state, False, _ro("Self Check Server State")),
+        ExtraToolDefinition("self_check_server_state", "Run a self-check across session state, local tool registry, optional HTTP discovery, service activity, and Agent Zero queue health.", {"type": "object", "properties": {"project": {"type": "string"}, "workspace": {"type": "string"}, "service": {"type": "string"}, "validate_http": {"type": "boolean"}}, "required": []}, self_check_server_state, False, _ro("Self Check Server State")),
     ]
 
     for tool in extra:

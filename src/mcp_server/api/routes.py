@@ -28,6 +28,7 @@ _ssh_client: Optional[SSHClient] = None
 _tools: Optional[MCPTools] = None
 _oauth_handler: Optional[OAuthHandler] = None
 _sse_transport: Optional[SSETransport] = None
+_protocol_handler: Optional[MCPProtocolHandler] = None
 
 
 def set_app_instances(
@@ -35,13 +36,15 @@ def set_app_instances(
     tools: MCPTools,
     oauth_handler: Optional[OAuthHandler],
     sse_transport: SSETransport,
+    protocol_handler: Optional[MCPProtocolHandler] = None,
 ):
     """Set global instances for the application."""
-    global _ssh_client, _tools, _oauth_handler, _sse_transport
+    global _ssh_client, _tools, _oauth_handler, _sse_transport, _protocol_handler
     _ssh_client = ssh_client
     _tools = tools
     _oauth_handler = oauth_handler
     _sse_transport = sse_transport
+    _protocol_handler = protocol_handler
 
 
 # Health endpoints
@@ -52,7 +55,7 @@ async def health_check():
     
     health_status = {
         "status": "healthy",
-        "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+        "timestamp": __import__('datetime').datetime.now(__import__('datetime').UTC).isoformat(),
         "version": settings.mcp.server_version,
     }
     
@@ -108,13 +111,35 @@ async def readiness_check():
             ready = False
     else:
         checks["oauth"] = "disabled"
+
+    # Check control plane readiness using a real fast tool execution
+    if _tools:
+        try:
+            probe = await asyncio.wait_for(
+                _tools.execute_tool("project_quick_facts", {}, user="readiness_probe"),
+                timeout=3,
+            )
+            if probe.get("isError"):
+                checks["control_plane"] = "degraded: probe_error"
+                ready = False
+            else:
+                checks["control_plane"] = "ready"
+        except asyncio.TimeoutError:
+            checks["control_plane"] = "not_ready: timeout"
+            ready = False
+        except Exception as e:
+            checks["control_plane"] = f"not_ready: {str(e)}"
+            ready = False
+    else:
+        checks["control_plane"] = "not_initialized"
+        ready = False
     
     status_code = 200 if ready else 503
     return JSONResponse(
         {
             "ready": ready,
             "checks": checks,
-            "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+            "timestamp": __import__('datetime').datetime.now(__import__('datetime').UTC).isoformat(),
         },
         status_code=status_code
     )
@@ -384,13 +409,7 @@ async def mcp_discovery_endpoint():
         raise HTTPException(status_code=501, detail="MCP tools not initialized")
     
     # Return tools/list response for ChatGPT refresh
-    tools_list = []
-    for name, tool_def in _tools._tools.items():
-        tools_list.append({
-            "name": tool_def.name,
-            "description": tool_def.description,
-            "inputSchema": tool_def.input_schema,
-        })
+    tools_list = _tools.get_tool_definitions()
     
     return JSONResponse({
         "jsonrpc": "2.0",
@@ -415,7 +434,7 @@ async def mcp_endpoint(
     try:
         body = await request.json()
         
-        protocol = MCPProtocolHandler(_ssh_client, _tools, _oauth_handler)
+        protocol = _protocol_handler or MCPProtocolHandler(_ssh_client, _tools, _oauth_handler)
         username = user.get("sub", "unknown") if user else "unknown"
         session_id = str(uuid.uuid4())
         
@@ -457,7 +476,7 @@ async def control_health_check():
     details = {
         "tool_registry": "ok" if _tools else "uninitialized",
         "local_tools": [],
-        "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+        "timestamp": __import__('datetime').datetime.now(__import__('datetime').UTC).isoformat(),
     }
 
     if not _tools:
@@ -472,16 +491,22 @@ async def control_health_check():
         else:
             details["local_tools"] = "ok"
 
-    # Check if executor is responsive by trying to get a tool definition (fast check)
+    # Check if executor is responsive by executing a fast local-only probe
     try:
         if _tools:
-            # Simple existence check, not execution
-            sample = _tools.get_tool("project_quick_facts")
-            if not sample:
-                details["executor"] = "warning: critical tool missing"
-                if status == "healthy": status = "degraded"
+            probe = await asyncio.wait_for(
+                _tools.execute_tool("project_quick_facts", {}, user="control_health_probe"),
+                timeout=3,
+            )
+            if probe.get("isError"):
+                details["executor"] = "probe_error"
+                if status == "healthy":
+                    status = "degraded"
             else:
                 details["executor"] = "ok"
+    except asyncio.TimeoutError:
+        details["executor"] = "timeout"
+        status = "unhealthy"
     except Exception as e:
         details["executor"] = f"error: {e}"
         status = "unhealthy"
