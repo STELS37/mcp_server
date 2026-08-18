@@ -8,7 +8,7 @@ on:
       - .github/workflows/aicall-prod-deploy-once.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   deploy-ai-call:
@@ -16,62 +16,169 @@ jobs:
     environment: production
     timeout-minutes: 30
     steps:
+      - name: Checkout ops branch
+        uses: actions/checkout@v4
+
       - name: Deploy exact AI Call release through existing server SSH
+        id: deploy
+        shell: bash
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
           SERVER_PORT: ${{ secrets.SERVER_PORT }}
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          key: ${{ env.SERVER_SSH_KEY }}
-          port: ${{ env.SERVER_PORT || 22 }}
-          command_timeout: 25m
-          script: |
-            set -Eeuo pipefail
-            EXPECTED_SHA="87b29fd5ed3c3be1fb585a3b3de0cf5173aacb38"
-            PROD_DIR="/a0/usr/projects/ai_call_prod"
-            TMP_SCRIPT="/tmp/ai_call_deploy_${EXPECTED_SHA}.sh"
+        run: |
+          set -u
+          STATUS_FILE=".ops/aicall-prod-deploy-87b29fd5.status"
+          RAW_FILE=".ops/aicall-prod-deploy-87b29fd5.raw"
+          KEY_FILE="${RUNNER_TEMP}/aicall_deploy_key"
+          KNOWN_HOSTS="${RUNNER_TEMP}/aicall_known_hosts"
+          PORT="${SERVER_PORT:-22}"
+          mkdir -p .ops
+          : > "$RAW_FILE"
 
-            echo "AI_CALL_DEPLOY_BEGIN"
-            echo "remote_user=$(id -un) uid=$(id -u) host=$(hostname)"
-
-            if [ ! -e "$PROD_DIR/.git" ]; then
-              echo "AI_CALL_PROD_NOT_FOUND:$PROD_DIR" >&2
-              exit 42
+          RC=0
+          if [ -z "${SERVER_HOST:-}" ] || [ -z "${SERVER_USER:-}" ] || [ -z "${SERVER_SSH_KEY:-}" ]; then
+            echo "AI_CALL_SSH_SECRETS_MISSING" > "$RAW_FILE"
+            RC=46
+          else
+            printf '%s\n' "$SERVER_SSH_KEY" > "$KEY_FILE"
+            chmod 600 "$KEY_FILE"
+            if ! ssh-keyscan -p "$PORT" "$SERVER_HOST" > "$KNOWN_HOSTS" 2>/dev/null; then
+              echo "AI_CALL_SSH_KEYSCAN_FAILED" > "$RAW_FILE"
+              RC=47
             fi
+          fi
 
-            cd "$PROD_DIR"
-            git fetch --prune origin main
-            ACTUAL_SHA="$(git rev-parse origin/main)"
-            echo "origin_main=$ACTUAL_SHA expected=$EXPECTED_SHA"
-            if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-              echo "AI_CALL_SHA_MISMATCH" >&2
-              exit 43
-            fi
+          if [ "$RC" -eq 0 ]; then
+            cat > "${RUNNER_TEMP}/remote-aicall-deploy.sh" <<'REMOTE'
+          set -Eeuo pipefail
+          PHASE="bootstrap"
+          trap 'rc=$?; echo "AI_CALL_REMOTE_FAILED phase=${PHASE} rc=${rc}"; exit "$rc"' ERR
 
-            git show "${EXPECTED_SHA}:scripts/deploy_prod_atomic.sh" > "$TMP_SCRIPT"
-            chmod 700 "$TMP_SCRIPT"
-            /bin/bash -n "$TMP_SCRIPT"
+          EXPECTED_SHA="87b29fd5ed3c3be1fb585a3b3de0cf5173aacb38"
+          PROD_DIR="/a0/usr/projects/ai_call_prod"
+          TMP_SCRIPT="/tmp/ai_call_deploy_${EXPECTED_SHA}.sh"
 
-            if [ "$(id -u)" -eq 0 ]; then
-              AI_CALL_DEPLOY_EXPECTED_SHA="$EXPECTED_SHA" /bin/bash "$TMP_SCRIPT"
-            elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-              sudo -n env AI_CALL_DEPLOY_EXPECTED_SHA="$EXPECTED_SHA" /bin/bash "$TMP_SCRIPT"
+          echo "AI_CALL_DEPLOY_BEGIN"
+
+          PHASE="wait_previous_deploy"
+          for _ in $(seq 1 120); do
+            if pgrep -f "$TMP_SCRIPT" >/dev/null 2>&1; then
+              sleep 5
             else
-              echo "AI_CALL_ROOT_REQUIRED" >&2
-              exit 44
+              break
             fi
+          done
+          if pgrep -f "$TMP_SCRIPT" >/dev/null 2>&1; then
+            echo "AI_CALL_PREVIOUS_DEPLOY_STILL_RUNNING"
+            exit 45
+          fi
 
-            FINAL_SHA="$(git -C "$PROD_DIR" rev-parse HEAD)"
-            echo "final_sha=$FINAL_SHA"
-            test "$FINAL_SHA" = "$EXPECTED_SHA"
-            systemctl is-active --quiet ai-call-prod.service
-            systemctl is-active --quiet agent3-runtime-prod.service
-            curl -fsS --max-time 5 http://127.0.0.1:8017/health
-            echo
-            curl -fsS --max-time 5 http://127.0.0.1:8037/health
-            echo
+          PHASE="locate_production"
+          if [ ! -e "$PROD_DIR/.git" ]; then
+            echo "AI_CALL_PROD_NOT_FOUND"
+            exit 42
+          fi
+
+          PHASE="fetch_origin_main"
+          cd "$PROD_DIR"
+          git fetch --prune origin main
+          ACTUAL_SHA="$(git rev-parse origin/main)"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          echo "origin_main=$ACTUAL_SHA"
+          echo "current_sha=$CURRENT_SHA"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "AI_CALL_SHA_MISMATCH"
+            exit 43
+          fi
+
+          # Idempotency: a previous trigger may already have completed the deploy.
+          # In that case only verify the exact code and live services; do not restart.
+          PHASE="verify_existing_release"
+          if [ "$CURRENT_SHA" = "$EXPECTED_SHA" ] \
+             && systemctl is-active --quiet ai-call-prod.service \
+             && systemctl is-active --quiet agent3-runtime-prod.service \
+             && curl -fsS --max-time 5 http://127.0.0.1:8017/health >/dev/null \
+             && curl -fsS --max-time 5 http://127.0.0.1:8037/health >/dev/null; then
+            echo "final_sha=$CURRENT_SHA"
+            echo "AI_CALL_ALREADY_DEPLOYED"
             echo "AI_CALL_DEPLOY_OK"
+            exit 0
+          fi
+
+          PHASE="extract_atomic_script"
+          git show "${EXPECTED_SHA}:scripts/deploy_prod_atomic.sh" > "$TMP_SCRIPT"
+          chmod 700 "$TMP_SCRIPT"
+          /bin/bash -n "$TMP_SCRIPT"
+
+          PHASE="run_atomic_deploy"
+          if [ "$(id -u)" -eq 0 ]; then
+            AI_CALL_DEPLOY_EXPECTED_SHA="$EXPECTED_SHA" /bin/bash "$TMP_SCRIPT"
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            sudo -n env AI_CALL_DEPLOY_EXPECTED_SHA="$EXPECTED_SHA" /bin/bash "$TMP_SCRIPT"
+          else
+            echo "AI_CALL_ROOT_REQUIRED"
+            exit 44
+          fi
+
+          PHASE="verify_final_release"
+          FINAL_SHA="$(git -C "$PROD_DIR" rev-parse HEAD)"
+          echo "final_sha=$FINAL_SHA"
+          test "$FINAL_SHA" = "$EXPECTED_SHA"
+          systemctl is-active --quiet ai-call-prod.service
+          systemctl is-active --quiet agent3-runtime-prod.service
+          curl -fsS --max-time 5 http://127.0.0.1:8017/health >/dev/null
+          curl -fsS --max-time 5 http://127.0.0.1:8037/health >/dev/null
+          echo "AI_CALL_DEPLOY_OK"
+          REMOTE
+
+            set +e
+            ssh \
+              -i "$KEY_FILE" \
+              -p "$PORT" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$KNOWN_HOSTS" \
+              -o ConnectTimeout=15 \
+              "$SERVER_USER@$SERVER_HOST" \
+              'bash -s' \
+              < "${RUNNER_TEMP}/remote-aicall-deploy.sh" \
+              > "$RAW_FILE" 2>&1
+            RC=$?
+            set -e
+          fi
+
+          {
+            echo "workflow_commit=${GITHUB_SHA}"
+            echo "exit_code=${RC}"
+            grep -E '^(AI_CALL_|origin_main=|current_sha=|final_sha=)' "$RAW_FILE" || true
+          } > "$STATUS_FILE"
+
+          # Publish only safe machine-readable markers to the public Actions log.
+          cat "$STATUS_FILE"
+          rm -f "$RAW_FILE" "$KEY_FILE" "$KNOWN_HOSTS" "${RUNNER_TEMP}/remote-aicall-deploy.sh"
+          exit "$RC"
+
+      - name: Persist safe deploy result to ops branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS_FILE=".ops/aicall-prod-deploy-87b29fd5.status"
+          mkdir -p .ops
+          if [ ! -f "$STATUS_FILE" ]; then
+            {
+              echo "workflow_commit=${GITHUB_SHA}"
+              echo "exit_code=99"
+              echo "AI_CALL_STATUS_FILE_MISSING"
+            } > "$STATUS_FILE"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$STATUS_FILE"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ops: record AI Call deploy result [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
