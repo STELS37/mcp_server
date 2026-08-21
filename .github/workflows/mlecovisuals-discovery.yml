@@ -3,6 +3,8 @@ name: Mleco Visuals Production Discovery
 on:
   push:
     branches: [mlecovisuals-release]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -38,7 +40,7 @@ jobs:
             echo "MANAGEMENT_HOST=$(hostname)"
             if [ -f /root/.secrets/spaceweb-panel.env ]; then echo "MGMT_SPACEWEB_CREDS=YES"; else echo "MGMT_SPACEWEB_CREDS=NO"; fi
             python3 - <<'PY'
-            import json, os, pathlib, subprocess
+            import json, pathlib, subprocess
             cfg = pathlib.Path('/a0/usr/projects/mcp_server/.runtime/ssh_targets.json')
             if not cfg.exists():
                 print('TARGET_CATALOG=NOT_FOUND')
