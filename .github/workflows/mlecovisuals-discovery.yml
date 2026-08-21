@@ -1,0 +1,75 @@
+name: Mleco Visuals Production Discovery
+
+on:
+  push:
+    branches: [mlecovisuals-release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+    steps:
+      - name: Validate management connection configuration
+        run: |
+          test -n "$SERVER_HOST" || { echo "SERVER_HOST_MISSING"; exit 2; }
+          test -n "$SERVER_USER" || { echo "SERVER_USER_MISSING"; exit 2; }
+          test -n "$SERVER_SSH_KEY" || { echo "SERVER_SSH_KEY_MISSING"; exit 2; }
+          echo "MANAGEMENT_CONFIG=OK"
+
+      - name: Read-only infrastructure discovery through MCP management VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ env.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          command_timeout: 5m
+          script: |
+            set -u
+            echo "DISCOVERY_VERSION=1"
+            echo "MANAGEMENT_HOST=$(hostname)"
+            if [ -f /root/.secrets/spaceweb-panel.env ]; then echo "MGMT_SPACEWEB_CREDS=YES"; else echo "MGMT_SPACEWEB_CREDS=NO"; fi
+            python3 - <<'PY'
+            import json, os, pathlib, subprocess
+            cfg = pathlib.Path('/a0/usr/projects/mcp_server/.runtime/ssh_targets.json')
+            if not cfg.exists():
+                print('TARGET_CATALOG=NOT_FOUND')
+                raise SystemExit(0)
+            try:
+                targets = json.loads(cfg.read_text())
+            except Exception as exc:
+                print('TARGET_CATALOG=INVALID', type(exc).__name__)
+                raise SystemExit(0)
+            print('TARGET_COUNT=' + str(len(targets)))
+            remote_probe = r'''echo REMOTE_HOST=$(hostname); if command -v nginx >/dev/null 2>&1; then echo NGINX=YES; nginx -T 2>/dev/null | grep -E 'server_name[^;]*(globalsystem\.cc|mlecovisuals)' | head -40 || true; else echo NGINX=NO; fi; if [ -f /root/.secrets/spaceweb-panel.env ]; then echo SPACEWEB_CREDS=YES; else echo SPACEWEB_CREDS=NO; fi; if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -E ':(80|443)[[:space:]]' | head -10 || true; fi'''
+            for name, raw in sorted(targets.items()):
+                if not isinstance(raw, dict):
+                    continue
+                host = str(raw.get('host') or '').strip()
+                user = str(raw.get('user') or 'root').strip()
+                port = str(raw.get('port') or 22)
+                key = str(raw.get('key_path') or '').strip()
+                print(f'TARGET name={name} host={host} user={user} port={port} key_present={"YES" if key and pathlib.Path(key).exists() else "NO"} password_configured={"YES" if raw.get("password") else "NO"}')
+                if not host or not key or not pathlib.Path(key).exists():
+                    continue
+                cmd = ['ssh','-i',key,'-p',port,'-o','BatchMode=yes','-o','ConnectTimeout=8','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null',f'{user}@{host}',remote_probe]
+                try:
+                    cp = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=25)
+                    print(f'PROBE_BEGIN {name} rc={cp.returncode}')
+                    print(cp.stdout[:12000])
+                    print(f'PROBE_END {name}')
+                except Exception as exc:
+                    print(f'PROBE_ERROR {name} {type(exc).__name__}')
+            PY
+            echo "PUBLIC_DNS_BEGIN"
+            getent ahostsv4 globalsystem.cc 2>/dev/null | head -5 || true
+            getent ahostsv4 mlecovisuals.globalsystem.cc 2>/dev/null | head -5 || true
+            echo "PUBLIC_DNS_END"
