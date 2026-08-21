@@ -11,7 +11,23 @@ permissions:
   pull-requests: write
 
 jobs:
+  signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signal that Actions runner started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GH_REPO/issues/1/comments" \
+            -d '{"body":"MCP_DISCOVERY_RUNNER_STARTED commit=${{ github.sha }}"}'
+
   discover:
+    needs: signal
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -24,9 +40,14 @@ jobs:
     steps:
       - name: Validate management connection configuration
         run: |
-          test -n "$SERVER_HOST" || { echo "SERVER_HOST_MISSING"; exit 2; }
-          test -n "$SERVER_USER" || { echo "SERVER_USER_MISSING"; exit 2; }
-          test -n "$SERVER_SSH_KEY" || { echo "SERVER_SSH_KEY_MISSING"; exit 2; }
+          if [ -z "$SERVER_HOST" ] || [ -z "$SERVER_USER" ] || [ -z "$SERVER_SSH_KEY" ]; then
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -d '{"body":"MCP_DISCOVERY_SECRETS_MISSING_OR_UNAVAILABLE"}'
+            exit 2
+          fi
           echo "MANAGEMENT_CONFIG=OK"
 
       - name: Read-only discovery and publish sanitized report
@@ -46,7 +67,7 @@ jobs:
             set -u
             OUT=$(mktemp)
             {
-              echo "DISCOVERY_VERSION=2"
+              echo "DISCOVERY_VERSION=3"
               echo "MANAGEMENT_HOST=$(hostname)"
               if [ -f /root/.secrets/spaceweb-panel.env ]; then echo "MGMT_SPACEWEB_CREDS=YES"; else echo "MGMT_SPACEWEB_CREDS=NO"; fi
               python3 - <<'PY'
