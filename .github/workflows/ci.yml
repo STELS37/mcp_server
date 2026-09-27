@@ -36,6 +36,9 @@ jobs:
         run: python -m compileall -q src
 
       - name: Import smoke
+        env:
+          MCP_SSH__HOST: ci.invalid
+          MCP_SSH__USER: ci-smoke
         run: |
           python -c "import mcp_server.main"
           python -c "import mcp_server.api.routes"
