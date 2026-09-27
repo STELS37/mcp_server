@@ -1,11 +1,9 @@
 import asyncio
 import json
-import logging
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query
+from fastapi import APIRouter, Request, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse, RedirectResponse
-from sse_starlette.sse import EventSourceResponse
 import structlog
 
 from mcp_server.core.settings import get_settings
@@ -87,8 +85,8 @@ async def readiness_check():
             try:
                 await asyncio.wait_for(_ssh_client.connect(), timeout=5)
                 checks["ssh"] = "ready"
-            except asyncio.TimeoutError as e:
-                checks["ssh"] = f"not_ready: timeout after 5s"
+            except asyncio.TimeoutError:
+                checks["ssh"] = "not_ready: timeout after 5s"
                 ready = False
             except Exception as e:
                 checks["ssh"] = f"not_ready: {str(e)}"
