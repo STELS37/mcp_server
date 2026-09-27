@@ -2,14 +2,10 @@
 import time
 import httpx
 import logging
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-import json
-import base64
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
 
 from jose import jwt, jwk, JWTError
-from jose.utils import base64url_decode
 
 from mcp_server.core.settings import get_settings, OAuthSettings
 
