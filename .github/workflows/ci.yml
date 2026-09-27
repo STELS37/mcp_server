@@ -2,13 +2,12 @@ name: CI/CD Pipeline
 
 permissions:
   contents: read
-  packages: read
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -18,69 +17,100 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest pytest-asyncio ruff mypy
+      - name: Install project and validation tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
 
-    - name: Lint with ruff
-      run: ruff check src/
+      - name: Lint correctness rules
+        run: ruff check src/
 
-    - name: Compile sources
-      run: python -m compileall -q src
+      - name: Compile sources
+        run: python -m compileall -q src
 
-    - name: Import smoke
-      run: |
-        python -c "import mcp_server.main"
-        python -c "import mcp_server.api.routes"
-        python -c "import mcp_server.tools.mcp_tools"
+      - name: Import smoke
+        run: |
+          python -c "import mcp_server.main"
+          python -c "import mcp_server.api.routes"
+          python -c "import mcp_server.tools.mcp_tools"
 
-    - name: Run tests
-      run: pytest -q
+      - name: Run tests
+        run: pytest -q
 
   build:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Build Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: false
-        tags: mcp-server:${{ github.sha }}
+      - name: Build exact commit image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: mcp-server:${{ github.sha }}
 
   deploy:
-    needs: build
+    needs: [verify, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: production
+    concurrency:
+      group: mcp-server-production
+      cancel-in-progress: false
     steps:
-    - name: Deploy to server
-      if: ${{ env.SERVER_HOST != '' }}
-      env:
-        SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        SERVER_USER: ${{ secrets.SERVER_USER }}
-        SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ env.SERVER_HOST }}
-        username: ${{ env.SERVER_USER }}
-        key: ${{ env.SERVER_SSH_KEY }}
-        script: |
-          cd /opt/mcp-server
-          git pull origin main
-          docker compose pull
-          docker compose up -d --build
-          curl -sf http://localhost:8000/health || exit 1
+      - name: Require deployment secrets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          test -n "$SERVER_HOST"
+          test -n "$SERVER_USER"
+          test -n "$SERVER_SSH_KEY"
+
+      - name: Deploy exact verified commit
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          EXPECTED_SHA: ${{ github.sha }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ env.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: EXPECTED_SHA
+          script: |
+            set -euo pipefail
+            cd /opt/mcp-server
+
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Refusing deployment: production worktree is dirty"
+              git status --short
+              exit 1
+            fi
+
+            git fetch origin main
+            remote_sha="$(git rev-parse origin/main)"
+            if [ "$remote_sha" != "$EXPECTED_SHA" ]; then
+              echo "Deployment superseded by newer main: expected=$EXPECTED_SHA remote=$remote_sha"
+              exit 0
+            fi
+
+            git checkout main
+            git merge --ff-only origin/main
+            test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+            bash scripts/deploy-production.sh "$EXPECTED_SHA"
