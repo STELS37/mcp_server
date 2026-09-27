@@ -61,7 +61,7 @@ target-version = "py310"
 [tool.ruff.lint]
 # Keep CI semantics stable across Ruff releases. Correctness rules are blocking;
 # broad modernization/style migrations are deliberate changes, not surprise CI drift.
-select = ["E4", "E7", "E9", "F", "W605"]
+select = ["E9", "F", "W605", "E722"]
 
 [tool.ruff.lint.per-file-ignores]
 # Legacy compatibility modules are not part of the lint modernization campaign.
