@@ -4,9 +4,8 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from dataclasses import dataclass
 
 
@@ -139,7 +138,7 @@ def register_direct_ops_tools(toolset) -> None:
             # Verify
             written = await asyncio.to_thread(p.read_text)
             if written != content:
-                return _result(f"Error: verification failed - content mismatch", True)
+                return _result("Error: verification failed - content mismatch", True)
             
             return _json_result({
                 "success": True,
@@ -166,7 +165,7 @@ def register_direct_ops_tools(toolset) -> None:
             matches = content.count(search)
             
             if matches == 0:
-                return _result(f"Error: search pattern not found (0 matches)", True)
+                return _result("Error: search pattern not found (0 matches)", True)
             
             new_content = content.replace(search, replace)
             
@@ -178,7 +177,7 @@ def register_direct_ops_tools(toolset) -> None:
             # Verify
             written = await asyncio.to_thread(p.read_text)
             if search in written:
-                return _result(f"Error: verification failed - search pattern still present", True)
+                return _result("Error: verification failed - search pattern still present", True)
             
             return _json_result({
                 "success": True,
@@ -198,7 +197,7 @@ def register_direct_ops_tools(toolset) -> None:
         items = []
         def _sort_key(x):
             try: return (not x.is_dir(), x.name.lower())
-            except: return (False, x.name.lower())
+            except OSError: return (False, x.name.lower())
 
         for item in sorted(p.iterdir(), key=_sort_key):
             try:
