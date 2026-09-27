@@ -1,16 +1,13 @@
 """SSH client for secure connections to experimental VPS."""
 import asyncio
 import logging
-import os
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
-import json
 
 import asyncssh
-from asyncssh import SSHClientConnection, SSHClientProcess, SSHCompletedProcess
+from asyncssh import SSHClientConnection
 
 from mcp_server.core.settings import get_settings, SSHSettings
 
@@ -106,7 +103,7 @@ class SSHClient:
                 if not key_path.exists():
                     raise FileNotFoundError(f"SSH key not found: {key_path}")
 
-                private_key = await asyncio.to_thread(
+                _private_key = await asyncio.to_thread(
                     self._load_private_key,
                     key_path,
                     self.settings.private_key_passphrase
@@ -241,7 +238,7 @@ class SSHClient:
         if is_dangerous and not confirm:
             return SSHResult(
                 stdout="",
-                stderr=f"DANGEROUS COMMAND DETECTED\n" + "\n".join(warnings) + "\n\nSet confirm=true to execute.",
+                stderr="DANGEROUS COMMAND DETECTED\n" + "\n".join(warnings) + "\n\nSet confirm=true to execute.",
                 exit_code=126,  # Command cannot execute
                 command=command,
                 duration=time.time() - start_time,
