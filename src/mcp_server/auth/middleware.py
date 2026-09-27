@@ -1,9 +1,9 @@
 """Authentication middleware for FastAPI."""
 import logging
-from typing import Optional, Callable, Any
+from typing import Optional, Callable
 from functools import wraps
 
-from mcp_server.auth.oauth import OAuthHandler, TokenInfo
+from mcp_server.auth.oauth import OAuthHandler
 
 from fastapi import Request, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials

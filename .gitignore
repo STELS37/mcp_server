@@ -60,3 +60,8 @@ temp/
 *.bak
 *.backup
 .runtime/ssh_targets.json
+
+# Repository hygiene
+/test_write.txt
+/tmp.txt
+/*_backup.zip

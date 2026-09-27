@@ -1,130 +1,62 @@
-name: Auto Deploy on Push
+name: Manual Production Deploy
 
 permissions:
   contents: read
-  packages: write
-
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
-        - staging
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tags }}
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Extract metadata for Docker
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ghcr.io/${{ github.repository }}
-        tags: |
-          type=ref,event=branch
-          type=sha,prefix=
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-    
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        platforms: linux/amd64,linux/arm64
-
   deploy:
-    needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'production' }}
-    
+    environment: production
+    concurrency:
+      group: mcp-server-production
+      cancel-in-progress: false
     steps:
-    - name: Deploy to server
-      if: ${{ env.SERVER_HOST != '' && env.SERVER_USER != '' && env.SERVER_SSH_KEY != '' }}
-      env:
-        SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        SERVER_USER: ${{ secrets.SERVER_USER }}
-        SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ env.SERVER_HOST }}
-        username: ${{ env.SERVER_USER }}
-        key: ${{ env.SERVER_SSH_KEY }}
-        port: ${{ secrets.SERVER_PORT || 22 }}
-        script: |
-          set -e
-          
-          echo "🚀 Starting deployment..."
-          
-          # Navigate to project directory
-          cd /opt/mcp-server
-          
-          # Pull latest code
-          git pull origin main
-          
-          # Pull latest Docker image
-          docker compose pull
-          
-          # Restart services
-          docker compose up -d --remove-orphans
-          
-          # Wait for health check
-          echo "⏳ Waiting for health check..."
-          sleep 10
-          
-          # Verify deployment
-          if curl -sf http://localhost:8000/health > /dev/null; then
-            echo "✅ Deployment successful!"
-          else
-            echo "❌ Health check failed!"
-            docker compose logs --tail=50
-            exit 1
-          fi
-          
-          # Clean up old images
-          docker image prune -f
-          
-          echo "🎉 Deployment complete!"
+      - name: Require deployment secrets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          test -n "$SERVER_HOST"
+          test -n "$SERVER_USER"
+          test -n "$SERVER_SSH_KEY"
 
-  notify:
-    needs: [build, deploy]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Send notification
-      run: |
-        if [ "${{ needs.deploy.result }}" == "success" ]; then
-          echo "✅ Deployment successful!"
-        elif [ "${{ needs.deploy.result }}" == "skipped" ]; then
-          echo "ℹ️ Deployment skipped (likely missing deploy secrets/environment)."
-        else
-          echo "⚠️ Deployment not successful: ${{ needs.deploy.result }}"
-        fi
+      - name: Deploy selected main commit
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          EXPECTED_SHA: ${{ github.sha }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ env.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: EXPECTED_SHA
+          script: |
+            set -euo pipefail
+            cd /opt/mcp-server
+
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Refusing deployment: production worktree is dirty"
+              git status --short
+              exit 1
+            fi
+
+            git fetch origin main
+            remote_sha="$(git rev-parse origin/main)"
+            if [ "$remote_sha" != "$EXPECTED_SHA" ]; then
+              echo "Refusing stale manual deployment: expected=$EXPECTED_SHA remote=$remote_sha"
+              exit 1
+            fi
+
+            git checkout main
+            git merge --ff-only origin/main
+            test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+            bash scripts/deploy-production.sh "$EXPECTED_SHA"

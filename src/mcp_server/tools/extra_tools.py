@@ -1,7 +1,6 @@
 """Extra narrow MCP tools for high-autonomy diagnostics, file inspection, and service bundles."""
 import json
 import shlex
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 

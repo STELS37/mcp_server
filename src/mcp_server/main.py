@@ -1,6 +1,5 @@
 """Main FastAPI Application for MCP SSH Gateway."""
 import logging
-import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -14,7 +13,7 @@ import structlog
 
 from mcp_server.core.settings import get_settings
 from mcp_server.auth.oauth import OAuthHandler
-from mcp_server.auth.middleware import AuthMiddleware, set_oauth_handler
+from mcp_server.auth.middleware import set_oauth_handler
 from mcp_server.tools.ssh_client import SSHClient
 from mcp_server.tools.mcp_tools import MCPTools
 from mcp_server.api.sse_transport import SSETransport, MCPProtocolHandler

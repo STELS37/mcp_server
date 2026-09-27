@@ -4,7 +4,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
-from mcp_server.tools.ssh_client import SSHClient, SSHResult
+from mcp_server.tools.ssh_client import SSHClient
 from mcp_server.core.settings import get_settings
 
 logger = logging.getLogger(__name__)

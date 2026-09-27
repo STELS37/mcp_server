@@ -5,7 +5,6 @@ import json
 import logging
 from typing import Dict, Any, Callable, Optional, List
 from dataclasses import dataclass
-from pathlib import Path
 
 # Import single router tool and extra modules
 from mcp_server.tools.single_router_tool import register_single_router_tool
@@ -258,7 +257,7 @@ class MCPTools:
                 logger.info(f"[MCP] result: isError={result.get('isError', False)}, elapsed={elapsed:.2f}s")
                 return result
 
-            except asyncio.TimeoutError as e:
+            except asyncio.TimeoutError:
                 logger.error(f"[MCP] TIMEOUT: tool={name} after {timeout}s")
                 return {
                     'content': [{'type': 'text', 'text': f'Tool execution timed out after {timeout}s: {name}'}],
