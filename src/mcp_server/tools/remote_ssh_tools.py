@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import time
-import base64
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
