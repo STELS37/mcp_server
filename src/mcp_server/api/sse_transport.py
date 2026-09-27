@@ -1,13 +1,10 @@
 """SSE Transport for MCP Protocol - ChatGPT Compatible."""
 import json
-import logging
 import asyncio
 import uuid
 from typing import Optional, Dict, Any, AsyncGenerator
-from datetime import datetime
 
-from fastapi import Request, Query
-from fastapi.responses import StreamingResponse
+from fastapi import Request
 from sse_starlette.sse import EventSourceResponse
 import structlog
 
